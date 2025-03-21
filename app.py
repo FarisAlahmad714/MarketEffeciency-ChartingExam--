@@ -6,13 +6,19 @@ import json
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 
-def fetch_chart_data(coin=None, timeframe='1d', limit=50):
-    coins = ['bitcoin', 'ethereum', 'binancecoin', 'cardano']
+def fetch_chart_data(coin=None, timeframe=None, limit=50):
+    # Expanded list of PoS assets (and BTC for trading analysis)
+    coins = [
+        'bitcoin', 'ethereum', 'cardano', 'binancecoin', 'polygon', 'solana',
+        'polkadot', 'cosmos', 'tezos', 'near-protocol'
+    ]
     timeframes = {'1h': 1, '4h': 7, '1d': 30}
+    
+    # Randomize coin if not specified
     coin = coin or random.choice(coins)
-    if timeframe not in timeframes:
-        print(f"Invalid timeframe '{timeframe}', defaulting to '1d'")
-        timeframe = '1d'
+    # Randomize timeframe if not specified
+    timeframe = timeframe or random.choice(list(timeframes.keys()))
+    
     days = timeframes[timeframe]
     url = f'https://api.coingecko.com/api/v3/coins/{coin}/ohlc?vs_currency=usd&days={days}'
     headers = {"x-cg-demo-api-key": "CG-X9rKSiVeFyMS6FPbUCaFw4Lc"}
@@ -42,25 +48,50 @@ def fetch_chart_data(coin=None, timeframe='1d', limit=50):
         print(f"Using dummy data: {len(dummy_data)} candles")
         return dummy_data, coin, timeframe
 
-def detect_swing_points(data, lookback=5):
+def detect_swing_points(data, lookback=5, timeframe='4h', significance_threshold=0.01):
+    # Adjust lookback based on timeframe
+    lookback_map = {'1h': 8, '4h': 5, '1d': 3}
+    lookback = lookback_map.get(timeframe, 5)
+
     swing_points = {'highs': [], 'lows': []}
+    # Calculate the total price range of the chart
+    price_range = max(c['high'] for c in data) - min(c['low'] for c in data) if data else 1
+    min_price_diff = price_range * significance_threshold  # Minimum price difference for significance
+
     for i in range(lookback, len(data) - lookback):
         current = data[i]
+        # Check for swing high
         before = [c['high'] for c in data[i - lookback:i]]
         after = [c['high'] for c in data[i + 1:i + 1 + lookback]]
         if current['high'] > max(before) and current['high'] > max(after):
-            swing_points['highs'].append({'time': current['time'], 'price': current['high']})
+            # Check significance: price difference between the high and the lowest low in the window
+            window_lows = [c['low'] for c in data[i - lookback:i + 1 + lookback]]
+            lowest_low = min(window_lows)
+            price_diff = current['high'] - lowest_low
+            if price_diff >= min_price_diff:
+                swing_points['highs'].append({'time': current['time'], 'price': current['high']})
+
+        # Check for swing low
         before_lows = [c['low'] for c in data[i - lookback:i]]
         after_lows = [c['low'] for c in data[i + 1:i + 1 + lookback]]
         if current['low'] < min(before_lows) and current['low'] < min(after_lows):
-            swing_points['lows'].append({'time': current['time'], 'price': current['low']})
+            # Check significance: price difference between the low and the highest high in the window
+            window_highs = [c['high'] for c in data[i - lookback:i + 1 + lookback]]
+            highest_high = max(window_highs)
+            price_diff = highest_high - current['low']
+            if price_diff >= min_price_diff:
+                swing_points['lows'].append({'time': current['time'], 'price': current['low']})
+
+    print(f"Detected {len(swing_points['highs'])} swing highs and {len(swing_points['lows'])} swing lows")
     return swing_points
 
 @app.route('/charting_exams')
 def charting_exams():
+    # Reset the exam data when returning to the exams page
+    session.pop('exam_data', None)
     return render_template('index.html')
 
-@app.route('/charting_exam/swing_analysis', methods=['GET', 'POST'])
+@app.route('/charting_exam/swing_analysis', methods=['GET'])
 def swing_analysis():
     if 'exam_data' not in session:
         session['exam_data'] = {
@@ -68,44 +99,41 @@ def swing_analysis():
             'scores': [],
             'chart_data': None,
             'coin': None,
-            'timeframe': None
+            'timeframe': None  # Will be randomized
         }
 
     exam_data = session['exam_data']
 
-    if request.method == 'GET':
-        chart_data, coin, timeframe = fetch_chart_data(timeframe='4h')
-        if not chart_data:
-            chart_data = [
-                {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
-                {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
-            ]
-        exam_data['chart_data'] = chart_data
-        exam_data['coin'] = coin
-        exam_data['timeframe'] = timeframe
-        session['exam_data'] = exam_data
+    chart_data, coin, timeframe = fetch_chart_data()
+    if not chart_data:
+        chart_data = [
+            {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
+            {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
+        ]
+    exam_data['chart_data'] = chart_data
+    exam_data['coin'] = coin
+    exam_data['timeframe'] = timeframe
+    session['exam_data'] = exam_data
 
-        return render_template(
-            'swing_analysis.html',
-            chart_data=chart_data,
-            progress={'chart_count': exam_data['chart_count']},
-            symbol=coin.upper(),
-            timeframe=timeframe
-        )
+    return render_template(
+        'swing_analysis.html',
+        chart_data=chart_data,
+        progress={'chart_count': exam_data['chart_count']},
+        symbol=coin.upper(),
+        timeframe=timeframe
+    )
 
 @app.route('/fetch_new_chart', methods=['GET'])
 def fetch_new_chart():
-    chart_data, coin, timeframe = fetch_chart_data(timeframe='4h')
+    exam_data = session.get('exam_data', {'chart_count': 1})
+    chart_data, coin, timeframe = fetch_chart_data()
     if not chart_data:
         chart_data = [
             {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
             {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
         ]
 
-    exam_data = session.get('exam_data', {'chart_count': 1})
     exam_data['chart_count'] = exam_data.get('chart_count', 1) + 1
-    if exam_data['chart_count'] > 5:
-        exam_data['chart_count'] = 1
     exam_data['chart_data'] = chart_data
     exam_data['coin'] = coin
     exam_data['timeframe'] = timeframe
@@ -130,9 +158,7 @@ def validate_drawing():
     interval = exam_data.get('timeframe', '4h')
 
     if exam_type == 'swing_analysis':
-        # Define lookback here and pass it to validate_swing_points
-        lookback = 5  # Match the default value used in detect_swing_points
-        validation_result = validate_swing_points(drawings, chart_data, interval, lookback)
+        validation_result = validate_swing_points(drawings, chart_data, interval)
     else:
         return jsonify({'success': False, 'message': 'Exam type not implemented yet'})
 
@@ -150,7 +176,7 @@ def validate_drawing():
         'expected': validation_result['expected']
     })
 
-def validate_swing_points(drawings, chart_data, interval, lookback):
+def validate_swing_points(drawings, chart_data, interval):
     if not chart_data or len(chart_data) < 10:
         return {
             'success': False,
@@ -158,22 +184,22 @@ def validate_swing_points(drawings, chart_data, interval, lookback):
             'score': 0,
             'feedback': {'correct': [], 'incorrect': [{'advice': 'No chart data available. Please try again with a different chart.'}]},
             'expected': {'highs': [], 'lows': []},
-            'totalExpectedPoints': 4
+            'totalExpectedPoints': 0
         }
 
-    swing_points = detect_swing_points(chart_data, lookback)
-    highs = sorted(swing_points['highs'], key=lambda x: x['price'], reverse=True)[:2]
-    lows = sorted(swing_points['lows'], key=lambda x: x['price'])[:2]
+    swing_points = detect_swing_points(chart_data, timeframe=interval)
+    highs = swing_points['highs']  # Use all detected swing highs
+    lows = swing_points['lows']    # Use all detected swing lows
     expected = {'highs': highs, 'lows': lows}
 
-    if len(highs) < 2 or len(lows) < 2:
+    if len(highs) + len(lows) == 0:
         return {
             'success': False,
-            'message': 'Not enough swing points detected in this chart.',
+            'message': 'No significant swing points detected in this chart.',
             'score': 0,
-            'feedback': {'correct': [], 'incorrect': [{'advice': 'This chart does not have enough clear swing points. Try another chart.'}]},
+            'feedback': {'correct': [], 'incorrect': [{'advice': 'This chart does not have any significant swing points. Try another chart.'}]},
             'expected': expected,
-            'totalExpectedPoints': 4
+            'totalExpectedPoints': 0
         }
 
     price_range = max(c['high'] for c in chart_data) - min(c['low'] for c in chart_data) if chart_data else 1
@@ -201,7 +227,7 @@ def validate_swing_points(drawings, chart_data, interval, lookback):
                     'type': point_type,
                     'time': point['time'],
                     'price': point['price'],
-                    'advice': f"Good job! You identified a swing {point_type} at price {point['price']:.2f}. This is a significant {point_type} point because it’s higher/lower than the surrounding {lookback} candles on both sides."
+                    'advice': f"Good job! You identified a significant swing {point_type} at price {point['price']:.2f}."
                 })
                 break
         if not point_matched:
@@ -209,7 +235,7 @@ def validate_swing_points(drawings, chart_data, interval, lookback):
                 'type': d['type'],
                 'time': d['time'],
                 'price': d['price'],
-                'advice': f"This point at price {d['price']:.2f} doesn’t match a significant swing point. A swing {d['type']} should be higher/lower than the surrounding {lookback} candles on both sides."
+                'advice': f"This point at price {d['price']:.2f} doesn’t match a significant swing point."
             })
 
     for i, point in enumerate(highs + lows):
@@ -219,16 +245,16 @@ def validate_swing_points(drawings, chart_data, interval, lookback):
                 'type': 'missed_point',
                 'time': point['time'],
                 'price': point['price'],
-                'advice': f"You missed a swing {point_type} at price {point['price']:.2f}. This is a significant {point_type} because it’s higher/lower than the surrounding {lookback} candles on both sides."
+                'advice': f"You missed a significant swing {point_type} at price {point['price']:.2f}."
             })
 
     total_expected = len(highs) + len(lows)
-    success = matched >= total_expected
+    success = matched == total_expected  # Success if all significant points are identified
     score = matched
 
     return {
         'success': success,
-        'message': 'Swing points identified correctly!' if success else 'Some swing points were missed or incorrect.',
+        'message': 'All significant swing points identified correctly!' if success else 'Some swing points were missed or incorrect.',
         'score': score,
         'feedback': feedback,
         'totalExpectedPoints': total_expected,
@@ -249,7 +275,7 @@ def fibonacci_retracement():
     exam_data = session['exam_data']
 
     if request.method == 'GET':
-        chart_data, coin, timeframe = fetch_chart_data(timeframe='4h')
+        chart_data, coin, timeframe = fetch_chart_data()
         if not chart_data:
             chart_data = [
                 {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
@@ -283,7 +309,7 @@ def fair_value_gaps():
     exam_data = session['exam_data']
 
     if request.method == 'GET':
-        chart_data, coin, timeframe = fetch_chart_data(timeframe='4h')
+        chart_data, coin, timeframe = fetch_chart_data()
         if not chart_data:
             chart_data = [
                 {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
@@ -317,7 +343,7 @@ def orderblocks():
     exam_data = session['exam_data']
 
     if request.method == 'GET':
-        chart_data, coin, timeframe = fetch_chart_data(timeframe='4h')
+        chart_data, coin, timeframe = fetch_chart_data()
         if not chart_data:
             chart_data = [
                 {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},

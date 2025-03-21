@@ -5,7 +5,7 @@
 {% block content %}
 <div class="container">
     <h2>Swing Analysis</h2>
-    <p>Use the pointer tool to mark swing highs and lows on the chart by clicking on the candlestick wicks. Identify at least 2 swing highs and 2 swing lows.</p>
+    <p>Identify all significant swing highs and lows on the chart by clicking on the candlestick wicks.</p>
     
     <!-- Progress indicator -->
     <div class="exam-progress">
@@ -19,10 +19,17 @@
     <div class="exam-container">
         <div class="chart-section">
             <h3 id="chart-symbol">Symbol: {{ symbol|default('Unknown') }} ({{ timeframe|default('Unknown') }})</h3>
-            <div id="chart" style="width: 800px; height: 600px;"></div>
+            <div id="chart-container" style="position: relative; width: 800px; height: 600px;">
+                <div id="chart" style="width: 100%; height: 100%;"></div>
+                <div id="swing-points-panel" class="swing-points-panel">
+                    <div class="panel-header">Swing Points</div>
+                    <div id="swing-points-list" class="panel-content"></div>
+                </div>
+            </div>
             
             <div class="toolbar mt-3">
                 <button id="mark-points" class="btn btn-primary">Mark Swing Points</button>
+                <button id="undo-marker" class="btn btn-warning">Undo</button>
                 <button id="clear-markers" class="btn btn-secondary">Clear Markers</button>
                 <button id="submit-btn" class="btn btn-success">Submit Answer</button>
             </div>
@@ -85,15 +92,93 @@
     let markingActive = false;
     let userPoints = [];
 
+    // Function to update the swing points panel
+    function updateSwingPointsPanel() {
+        const swingPointsList = document.getElementById('swing-points-list');
+        if (userPoints.length === 0) {
+            swingPointsList.innerHTML = '<p>No swing points marked yet.</p>';
+            return;
+        }
+        swingPointsList.innerHTML = userPoints.map(point => {
+            const date = new Date(point.time * 1000).toLocaleDateString();
+            return `
+                <div class="swing-point-item">
+                    <span class="point-type">${point.type.toUpperCase()}</span>
+                    <span class="point-price">Price: ${point.price.toFixed(2)}</span>
+                    <span class="point-date">Date: ${date}</span>
+                </div>
+            `;
+        }).join('');
+    }
+
+    // Make the swing points panel draggable
+    const panel = document.getElementById('swing-points-panel');
+    let isDragging = false;
+    let currentX;
+    let currentY;
+    let xOffset = 0;
+    let yOffset = 0;
+
+    panel.addEventListener('mousedown', startDragging);
+    document.addEventListener('mousemove', drag);
+    document.addEventListener('mouseup', stopDragging);
+
+    function startDragging(e) {
+        if (e.target.classList.contains('panel-header')) {
+            isDragging = true;
+            currentX = e.clientX - xOffset;
+            currentY = e.clientY - yOffset;
+        }
+    }
+
+    function drag(e) {
+        if (isDragging) {
+            e.preventDefault();
+            xOffset = e.clientX - currentX;
+            yOffset = e.clientY - currentY;
+            
+            // Constrain the panel within the chart container
+            const container = document.getElementById('chart-container');
+            const maxX = container.offsetWidth - panel.offsetWidth;
+            const maxY = container.offsetHeight - panel.offsetHeight;
+            xOffset = Math.max(0, Math.min(xOffset, maxX));
+            yOffset = Math.max(0, Math.min(yOffset, maxY));
+            
+            panel.style.left = xOffset + 'px';
+            panel.style.top = yOffset + 'px';
+        }
+    }
+
+    function stopDragging() {
+        isDragging = false;
+    }
+
     document.getElementById('mark-points').addEventListener('click', () => {
         markingActive = !markingActive;
         document.getElementById('mark-points').textContent = markingActive ? 'Stop Marking' : 'Mark Swing Points';
         console.log("Marking active:", markingActive);
     });
 
+    document.getElementById('undo-marker').addEventListener('click', () => {
+        if (userPoints.length > 0) {
+            userPoints.pop(); // Remove the last swing point
+            candleSeries.setMarkers(userPoints.map(p => ({
+                time: p.time,
+                position: p.type === 'high' ? 'aboveBar' : 'belowBar',
+                color: 'blue',
+                shape: 'circle'
+            })));
+            updateSwingPointsPanel();
+            console.log("Last marker undone");
+        } else {
+            console.log("No markers to undo");
+        }
+    });
+
     document.getElementById('clear-markers').addEventListener('click', () => {
         userPoints = [];
         candleSeries.setMarkers([]);
+        updateSwingPointsPanel();
         console.log("Markers cleared");
     });
 
@@ -129,8 +214,10 @@
             return;
         }
 
-        // Determine if the click is closer to the high or low wick
-        const pointType = Math.abs(clickedPrice - candle.high) < Math.abs(clickedPrice - candle.low) ? 'high' : 'low';
+        // Determine if the click is closer to the high or low wick using a threshold
+        const priceRange = candle.high - candle.low;
+        const midpoint = candle.low + priceRange / 2;
+        const pointType = clickedPrice >= midpoint ? 'high' : 'low';
         const priceToUse = pointType === 'high' ? candle.high : candle.low;
 
         // Check for duplicates
@@ -143,6 +230,7 @@
                 color: 'blue',
                 shape: 'circle'
             })));
+            updateSwingPointsPanel();
             console.log("User point added:", { time: candle.time, price: priceToUse, type: pointType });
         } else {
             console.log("Point already marked at this time and type:", candle.time, pointType);
@@ -197,7 +285,6 @@
         })
         .then(response => response.json())
         .then(data => {
-            chartCount = data.chart_count;
             chartScores.push({
                 chart: chartCount,
                 score: data.score,
@@ -212,7 +299,7 @@
                 </div>
                 <div class="score-statistics">
                     <div class="stat-row">
-                        <span class="stat-label">Total swing points on chart:</span>
+                        <span class="stat-label">Total significant swing points:</span>
                         <span class="stat-value neutral">${data.totalExpectedPoints}</span>
                     </div>
                     <div class="stat-row">
@@ -225,7 +312,7 @@
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">Incorrectly placed:</span>
-                        <span class="stat-value ${data.feedback.incorrect.length > 0 ? 'poor' : 'good'}">${data.feedback.incorrect.length}</span>
+                        <span class="stat-value ${data.feedback.incorrect.filter(f => f.type !== 'missed_point').length > 0 ? 'poor' : 'good'}">${data.feedback.incorrect.filter(f => f.type !== 'missed_point').length}</span>
                     </div>
                     <div class="stat-row">
                         <span class="stat-label">Missed points:</span>
@@ -233,7 +320,7 @@
                     </div>
                 </div>
                 <div class="score-bar-container">
-                    <div class="score-bar" style="width: ${(data.score/data.totalExpectedPoints)*100}%"></div>
+                    <div class="score-bar" style="width: ${data.totalExpectedPoints > 0 ? (data.score/data.totalExpectedPoints)*100 : 0}%"></div>
                 </div>
             `;
 
@@ -241,32 +328,51 @@
                 resultsHtml += `
                     <div class="feedback-section correct-section">
                         <h4>Correct Points</h4>
-                        <ul class="feedback-list">
+                        <div class="feedback-grid">
                             ${data.feedback.correct.map(point => `
-                                <li>
-                                    <span class="point-type">${point.type.toUpperCase()}</span>
-                                    <span class="point-value">${point.price.toFixed(4)}</span>
-                                    <span class="point-advice">${point.advice}</span>
-                                </li>
+                                <div class="feedback-card">
+                                    <span class="feedback-type ${point.type === 'high' ? 'high' : 'low'}">${point.type.toUpperCase()}</span>
+                                    <span class="feedback-price">${point.price.toFixed(4)}</span>
+                                    <p class="feedback-advice">${point.advice}</p>
+                                </div>
                             `).join('')}
-                        </ul>
+                        </div>
                     </div>
                 `;
             }
 
-            if (data.feedback.incorrect.length > 0) {
+            const incorrectPoints = data.feedback.incorrect.filter(f => f.type !== 'missed_point');
+            if (incorrectPoints.length > 0) {
                 resultsHtml += `
                     <div class="feedback-section incorrect-section">
-                        <h4>Incorrect/Missed Points</h4>
-                        <ul class="feedback-list">
-                            ${data.feedback.incorrect.map(point => `
-                                <li>
-                                    <span class="point-type">${point.type === 'missed_point' ? 'MISSED' : point.type.toUpperCase()}</span>
-                                    <span class="point-value">${point.price.toFixed(4)}</span>
-                                    <span class="point-advice">${point.advice}</span>
-                                </li>
+                        <h4>Incorrect Points</h4>
+                        <div class="feedback-grid">
+                            ${incorrectPoints.map(point => `
+                                <div class="feedback-card">
+                                    <span class="feedback-type ${point.type === 'high' ? 'high' : 'low'}">${point.type.toUpperCase()}</span>
+                                    <span class="feedback-price">${point.price.toFixed(4)}</span>
+                                    <p class="feedback-advice">${point.advice}</p>
+                                </div>
                             `).join('')}
-                        </ul>
+                        </div>
+                    </div>
+                `;
+            }
+
+            const missedPoints = data.feedback.incorrect.filter(f => f.type === 'missed_point');
+            if (missedPoints.length > 0) {
+                resultsHtml += `
+                    <div class="feedback-section missed-section">
+                        <h4>Missed Points</h4>
+                        <div class="feedback-grid">
+                            ${missedPoints.map(point => `
+                                <div class="feedback-card">
+                                    <span class="feedback-type ${point.type === 'missed_point' ? 'missed' : ''}">MISSED</span>
+                                    <span class="feedback-price">${point.price.toFixed(4)}</span>
+                                    <p class="feedback-advice">${point.advice}</p>
+                                </div>
+                            `).join('')}
+                        </div>
                     </div>
                 `;
             }
@@ -278,24 +384,34 @@
             document.querySelector('.exam-container').classList.add('with-results');
 
             document.getElementById('continue-btn').onclick = function() {
-                if (chartCount >= maxCharts) {
+                // Increment chartCount locally after submission
+                chartCount++;
+                if (chartCount > maxCharts) {
                     showFinalResults();
                 } else {
                     fetch('/fetch_new_chart')
                         .then(response => response.json())
                         .then(data => {
+                            chartData = data.chart_data; // Update chartData for findNearestCandle
                             candleSeries.setData(data.chart_data);
-                            chartCount = data.chart_count;
                             document.getElementById('current-chart').textContent = chartCount;
                             document.querySelector('.chart-progress').style.width = `${(chartCount / maxCharts) * 100}%`;
                             document.getElementById('chart-symbol').textContent = `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
                             userPoints = [];
                             candleSeries.setMarkers([]);
-                            if (chartCount >= maxCharts) {
+                            updateSwingPointsPanel();
+                            chart.timeScale().resetTimeScale(); // Reset zoom and scroll
+                            chart.timeScale().fitContent(); // Fit the new data
+                            if (chartCount === maxCharts) {
                                 document.getElementById('continue-btn').textContent = "Finish Exam";
                             }
                             resultsSection.classList.remove('active');
                             document.querySelector('.exam-container').classList.remove('with-results');
+                            // Reset panel position
+                            panel.style.left = '10px';
+                            panel.style.top = '10px';
+                            xOffset = 10;
+                            yOffset = 10;
                         })
                         .catch(error => {
                             console.error('Error fetching new chart:', error);
@@ -326,7 +442,7 @@
     function showFinalResults() {
         const totalScore = chartScores.reduce((sum, chart) => sum + chart.score, 0);
         const totalPossible = chartScores.reduce((sum, chart) => sum + chart.total, 0);
-        const percentage = Math.round((totalScore / totalPossible) * 100);
+        const percentage = totalScore > 0 && totalPossible > 0 ? Math.round((totalScore / totalPossible) * 100) : 0;
 
         const resultsContent = document.getElementById('results-content');
         resultsContent.innerHTML = `
@@ -347,7 +463,7 @@
                                 <span class="chart-number">Chart ${index + 1}</span>
                                 <span class="chart-score">${chart.score}/${chart.total}</span>
                                 <div class="chart-mini-bar">
-                                    <div class="chart-mini-progress" style="width: ${(chart.score/chart.total)*100}%"></div>
+                                    <div class="chart-mini-progress" style="width: ${chart.total > 0 ? (chart.score/chart.total)*100 : 0}%"></div>
                                 </div>
                             </li>
                         `).join('')}
@@ -360,6 +476,9 @@
         `;
         document.getElementById('continue-btn').style.display = 'none';
     }
+
+    // Initialize the swing points panel
+    updateSwingPointsPanel();
 </script>
 
 <style>
@@ -446,25 +565,68 @@
         background: #4CAF50;
         border-radius: 5px;
     }
+    .feedback-section {
+        margin-top: 15px;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    .correct-section {
+        background: #e8f5e9;
+        border: 1px solid #4CAF50;
+    }
+    .incorrect-section {
+        background: #ffebee;
+        border: 1px solid #F44336;
+    }
+    .missed-section {
+        background: #fff3e0;
+        border: 1px solid #FF9800;
+    }
     .feedback-section h4 {
-        margin: 10px 0 5px;
+        margin: 0 0 10px;
+        font-size: 1.1rem;
     }
-    .feedback-list {
-        list-style: none;
-        padding: 0;
+    .feedback-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
     }
-    .feedback-list li {
-        margin-bottom: 5px;
+    .feedback-card {
+        background: #fff;
+        padding: 8px;
+        border-radius: 4px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
     }
-    .point-type {
+    .feedback-type {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 0.8rem;
         font-weight: bold;
-        margin-right: 5px;
+        color: #fff;
     }
-    .point-value {
-        margin-right: 5px;
+    .feedback-type.high {
+        background: #4CAF50;
     }
-    .point-advice {
+    .feedback-type.low {
+        background: #2196F3;
+    }
+    .feedback-type.missed {
+        background: #FF9800;
+    }
+    .feedback-price {
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: #333;
+    }
+    .feedback-advice {
+        margin: 0;
+        font-size: 0.85rem;
         color: #666;
+        font-style: italic;
     }
     .final-score {
         display: flex;
@@ -558,6 +720,47 @@
     @keyframes spin {
         0% { transform: rotate(0deg); }
         100% { transform: rotate(360deg); }
+    }
+    .swing-points-panel {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        width: 200px;
+        max-height: 200px;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        z-index: 10;
+        overflow-y: auto;
+        font-size: 0.9rem;
+    }
+    .panel-header {
+        background: #4CAF50;
+        color: white;
+        padding: 5px;
+        text-align: center;
+        cursor: move;
+        font-weight: bold;
+    }
+    .panel-content {
+        padding: 5px;
+    }
+    .swing-point-item {
+        margin-bottom: 5px;
+        padding: 3px;
+        border-bottom: 1px solid #eee;
+    }
+    .swing-point-item:last-child {
+        border-bottom: none;
+    }
+    .point-type {
+        font-weight: bold;
+        color: #333;
+    }
+    .point-price, .point-date {
+        display: block;
+        color: #666;
     }
 </style>
 {% endblock %}
