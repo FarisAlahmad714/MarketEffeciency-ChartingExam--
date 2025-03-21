@@ -7,16 +7,13 @@ app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 
 def fetch_chart_data(coin=None, timeframe=None, limit=50):
-    # Expanded list of PoS assets (and BTC for trading analysis)
     coins = [
-        'bitcoin', 'ethereum', 'cardano', 'binancecoin', 'polygon', 'solana',
-        'polkadot', 'cosmos', 'tezos', 'near-protocol'
+        'bitcoin', 'ethereum', 'binancecoin', 'solana', 'matic-network', 'polkadot',
+        'cosmos', 'tezos', 'near', 'ripple', 'litecoin', 'chainlink'
     ]
     timeframes = {'1h': 1, '4h': 7, '1d': 30}
     
-    # Randomize coin if not specified
     coin = coin or random.choice(coins)
-    # Randomize timeframe if not specified
     timeframe = timeframe or random.choice(list(timeframes.keys()))
     
     days = timeframes[timeframe]
@@ -49,33 +46,27 @@ def fetch_chart_data(coin=None, timeframe=None, limit=50):
         return dummy_data, coin, timeframe
 
 def detect_swing_points(data, lookback=5, timeframe='4h', significance_threshold=0.01):
-    # Adjust lookback based on timeframe
     lookback_map = {'1h': 8, '4h': 5, '1d': 3}
     lookback = lookback_map.get(timeframe, 5)
 
     swing_points = {'highs': [], 'lows': []}
-    # Calculate the total price range of the chart
     price_range = max(c['high'] for c in data) - min(c['low'] for c in data) if data else 1
-    min_price_diff = price_range * significance_threshold  # Minimum price difference for significance
+    min_price_diff = price_range * significance_threshold
 
     for i in range(lookback, len(data) - lookback):
         current = data[i]
-        # Check for swing high
         before = [c['high'] for c in data[i - lookback:i]]
         after = [c['high'] for c in data[i + 1:i + 1 + lookback]]
         if current['high'] > max(before) and current['high'] > max(after):
-            # Check significance: price difference between the high and the lowest low in the window
             window_lows = [c['low'] for c in data[i - lookback:i + 1 + lookback]]
             lowest_low = min(window_lows)
             price_diff = current['high'] - lowest_low
             if price_diff >= min_price_diff:
                 swing_points['highs'].append({'time': current['time'], 'price': current['high']})
 
-        # Check for swing low
         before_lows = [c['low'] for c in data[i - lookback:i]]
         after_lows = [c['low'] for c in data[i + 1:i + 1 + lookback]]
         if current['low'] < min(before_lows) and current['low'] < min(after_lows):
-            # Check significance: price difference between the low and the highest high in the window
             window_highs = [c['high'] for c in data[i - lookback:i + 1 + lookback]]
             highest_high = max(window_highs)
             price_diff = highest_high - current['low']
@@ -85,9 +76,29 @@ def detect_swing_points(data, lookback=5, timeframe='4h', significance_threshold
     print(f"Detected {len(swing_points['highs'])} swing highs and {len(swing_points['lows'])} swing lows")
     return swing_points
 
+def determine_trend(data):
+    if len(data) < 10:
+        return 'sideways'
+    
+    recent_data = data[-10:]
+    highs = [c['high'] for c in recent_data]
+    lows = [c['low'] for c in recent_data]
+    
+    is_uptrend = all(highs[i] < highs[i + 1] for i in range(len(highs) - 1)) and \
+                 all(lows[i] < lows[i + 1] for i in range(len(lows) - 1))
+    
+    is_downtrend = all(highs[i] > highs[i + 1] for i in range(len(highs) - 1)) and \
+                   all(lows[i] > lows[i + 1] for i in range(len(lows) - 1))
+    
+    if is_uptrend:
+        return 'uptrend'
+    elif is_downtrend:
+        return 'downtrend'
+    else:
+        return 'sideways'
+
 @app.route('/charting_exams')
 def charting_exams():
-    # Reset the exam data when returning to the exams page
     session.pop('exam_data', None)
     return render_template('index.html')
 
@@ -99,7 +110,7 @@ def swing_analysis():
             'scores': [],
             'chart_data': None,
             'coin': None,
-            'timeframe': None  # Will be randomized
+            'timeframe': None
         }
 
     exam_data = session['exam_data']
@@ -159,6 +170,8 @@ def validate_drawing():
 
     if exam_type == 'swing_analysis':
         validation_result = validate_swing_points(drawings, chart_data, interval)
+    elif exam_type == 'fibonacci_retracement':
+        validation_result = validate_fibonacci_retracement(drawings, chart_data, interval)
     else:
         return jsonify({'success': False, 'message': 'Exam type not implemented yet'})
 
@@ -173,7 +186,7 @@ def validate_drawing():
         'feedback': validation_result['feedback'],
         'score': validation_result['score'],
         'totalExpectedPoints': validation_result['totalExpectedPoints'],
-        'expected': validation_result['expected']
+        'expected': validation_result.get('expected', {})
     })
 
 def validate_swing_points(drawings, chart_data, interval):
@@ -188,8 +201,8 @@ def validate_swing_points(drawings, chart_data, interval):
         }
 
     swing_points = detect_swing_points(chart_data, timeframe=interval)
-    highs = swing_points['highs']  # Use all detected swing highs
-    lows = swing_points['lows']    # Use all detected swing lows
+    highs = swing_points['highs']
+    lows = swing_points['lows']
     expected = {'highs': highs, 'lows': lows}
 
     if len(highs) + len(lows) == 0:
@@ -249,7 +262,7 @@ def validate_swing_points(drawings, chart_data, interval):
             })
 
     total_expected = len(highs) + len(lows)
-    success = matched == total_expected  # Success if all significant points are identified
+    success = matched == total_expected
     score = matched
 
     return {
@@ -259,6 +272,122 @@ def validate_swing_points(drawings, chart_data, interval):
         'feedback': feedback,
         'totalExpectedPoints': total_expected,
         'expected': expected
+    }
+
+def validate_fibonacci_retracement(drawings, chart_data, interval):
+    default_expected = {'start': {'time': 0, 'price': 0}, 'end': {'time': 0, 'price': 0}, 'direction': 'unknown'}
+
+    if not chart_data or len(chart_data) < 10:
+        return {
+            'success': False,
+            'message': 'Insufficient chart data for validation.',
+            'score': 0,
+            'feedback': {'correct': [], 'incorrect': [{'advice': 'No chart data available. Please try again with a different chart.'}]},
+            'totalExpectedPoints': 0,
+            'expected': default_expected
+        }
+
+    swing_points = detect_swing_points(chart_data, timeframe=interval)
+    highs = sorted(swing_points['highs'], key=lambda x: x['price'], reverse=True)
+    lows = sorted(swing_points['lows'], key=lambda x: x['price'])
+
+    if len(highs) < 1 or len(lows) < 1:
+        return {
+            'success': False,
+            'message': 'Not enough significant swing points to form a Fibonacci retracement.',
+            'score': 0,
+            'feedback': {'correct': [], 'incorrect': [{'advice': 'This chart does not have enough significant swing points for a Fibonacci retracement. Try another chart.'}]},
+            'totalExpectedPoints': 0,
+            'expected': default_expected
+        }
+
+    trend = determine_trend(chart_data)
+    print(f"Detected trend: {trend}")
+
+    if trend == 'uptrend':
+        swing_high = max(highs, key=lambda x: x['time'])
+        swing_low = max([low for low in lows if low['time'] < swing_high['time']], key=lambda x: x['time'], default=None)
+        expected_direction = 'uptrend'
+    elif trend == 'downtrend':
+        swing_low = min(lows, key=lambda x: x['time'])
+        swing_high = min([high for high in highs if high['time'] > swing_low['time']], key=lambda x: x['time'], default=None)
+        expected_direction = 'downtrend'
+    else:
+        swing_high = highs[0]
+        swing_low = lows[0]
+        expected_direction = 'uptrend' if swing_low['time'] < swing_high['time'] else 'downtrend'
+
+    if not swing_high or not swing_low:
+        return {
+            'success': False,
+            'message': 'Could not determine a significant retracement in this chart.',
+            'score': 0,
+            'feedback': {'correct': [], 'incorrect': [{'advice': 'This chart does not have a clear retracement opportunity. Try another chart.'}]},
+            'totalExpectedPoints': 0,
+            'expected': default_expected
+        }
+
+    expected_retracement = {
+        'start': swing_low if expected_direction == 'uptrend' else swing_high,
+        'end': swing_high if expected_direction == 'uptrend' else swing_low,
+        'direction': expected_direction
+    }
+
+    price_range = max(c['high'] for c in chart_data) - min(c['low'] for c in chart_data) if chart_data else 1
+    tolerance_map = {'1h': 0.01, '4h': 0.02, '1d': 0.03}
+    price_tolerance = price_range * tolerance_map.get(interval, 0.02)
+    time_increment = {'1h': 3600, '4h': 14400, '1d': 86400}.get(interval, 14400)
+    time_tolerance = time_increment * 3
+
+    matched = 0
+    feedback = {'correct': [], 'incorrect': []}
+
+    for fib in drawings:
+        start_matched = (abs(fib['start']['time'] - expected_retracement['start']['time']) < time_tolerance and
+                         abs(fib['start']['price'] - expected_retracement['start']['price']) < price_tolerance)
+        end_matched = (abs(fib['end']['time'] - expected_retracement['end']['time']) < time_tolerance and
+                       abs(fib['end']['price'] - expected_retracement['end']['price']) < price_tolerance)
+        
+        user_direction = 'uptrend' if fib['end']['price'] > fib['start']['price'] else 'downtrend'
+        direction_matched = user_direction == expected_direction
+
+        if start_matched and end_matched and direction_matched:
+            matched += 1
+            feedback['correct'].append({
+                'direction': user_direction,
+                'startPrice': fib['start']['price'],
+                'endPrice': fib['end']['price'],
+                'advice': f"Good job! You correctly drew a Fibonacci retracement for an {user_direction} from {fib['start']['price']:.2f} to {fib['end']['price']:.2f}."
+            })
+        else:
+            feedback['incorrect'].append({
+                'type': 'incorrect_retracement',
+                'direction': user_direction,
+                'startPrice': fib['start']['price'],
+                'endPrice': fib['end']['price'],
+                'advice': f"This retracement from {fib['start']['price']:.2f} to {fib['end']['price']:.2f} does not match the expected {expected_direction} retracement."
+            })
+
+    if matched == 0:
+        feedback['incorrect'].append({
+            'type': 'missed_retracement',
+            'direction': expected_direction,
+            'startPrice': expected_retracement['start']['price'],
+            'endPrice': expected_retracement['end']['price'],
+            'advice': f"You missed the significant {expected_direction} retracement from {expected_retracement['start']['price']:.2f} to {expected_retracement['end']['price']:.2f}."
+        })
+
+    total_expected = 1
+    success = matched == total_expected
+    score = matched
+
+    return {
+        'success': success,
+        'message': 'Fibonacci retracement identified correctly!' if success else 'The retracement was incorrect or missed.',
+        'score': score,
+        'feedback': feedback,
+        'totalExpectedPoints': total_expected,
+        'expected': expected_retracement
     }
 
 @app.route('/charting_exam/fibonacci_retracement', methods=['GET', 'POST'])

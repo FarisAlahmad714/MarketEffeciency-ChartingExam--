@@ -1,56 +1,63 @@
-{% extends "base.html" %}
-
-{% block title %}Charting Exam Selection{% endblock %}
-
-{% block content %}
-<div class="container">
-    <h1>Charting Exams</h1>
-    <p>Practice technical analysis by drawing directly on charts to identify key patterns.</p>
-    
-    <div class="row">
-        <!-- Swing Analysis -->
-        <div class="col-md-6 mb-4">
-            <div class="card">
-                <div class="card-body">
-                    <h5 class="card-title">Swing Points & Equal Highs/Lows</h5>
-                    <p class="card-text">Practice identifying swing points and equal/old levels through chart markup. Tools: Pointers.</p>
-                    <a href="{{ url_for('swing_analysis') }}" class="btn btn-primary">Start Practice</a>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Charting Exams</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            background-color: #f8f9fa;
+        }
+        .exam-card {
+            transition: transform 0.2s;
+        }
+        .exam-card:hover {
+            transform: scale(1.05);
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-5">
+        <h1 class="text-center mb-4">Charting Exams</h1>
+        <div class="row">
+            <div class="col-md-6 col-lg-4 mb-4">
+                <div class="card exam-card">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Swing Analysis</h5>
+                        <p class="card-text">Practice identifying swing highs and lows on the chart.</p>
+                        <a href="/charting_exam/swing_analysis" class="btn btn-primary">Start Practice</a>
+                    </div>
                 </div>
             </div>
-        </div>
-        
-        <!-- Fibonacci Retracement -->
-        <div class="col-md-6 mb-4">
-            <div class="card">
-                <div class="card-body">
-                    <h5 class="card-title">Fibonacci Retracement</h5>
-                    <p class="card-text">Learn to plot Fibonacci retracements from swing high to swing low. Tools: Fibonacci.</p>
-                    <a href="{{ url_for('fibonacci_retracement') }}" class="btn btn-primary">Start Practice</a>
+            <div class="col-md-6 col-lg-4 mb-4">
+                <div class="card exam-card">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Fibonacci Retracement</h5>
+                        <p class="card-text">Practice drawing Fibonacci retracement levels on the chart.</p>
+                        <a href="/charting_exam/fibonacci_retracement" class="btn btn-primary">Start Practice</a>
+                    </div>
                 </div>
             </div>
-        </div>
-        
-        <!-- Fair Value Gaps -->
-        <div class="col-md-6 mb-4">
-            <div class="card">
-                <div class="card-body">
-                    <h5 class="card-title">Fair Value Gaps</h5>
-                    <p class="card-text">Identify fair value gaps, volume imbalances, and consequent encroachment. Tools: Box.</p>
-                    <a href="{{ url_for('fair_value_gaps') }}" class="btn btn-primary">Start Practice</a>
+            <div class="col-md-6 col-lg-4 mb-4">
+                <div class="card exam-card">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Fair Value Gaps</h5>
+                        <p class="card-text">Practice identifying fair value gaps on the chart.</p>
+                        <a href="/charting_exam/fair_value_gaps" class="btn btn-primary">Start Practice</a>
+                    </div>
                 </div>
             </div>
-        </div>
-        
-        <!-- Orderblocks -->
-        <div class="col-md-6 mb-4">
-            <div class="card">
-                <div class="card-body">
-                    <h5 class="card-title">Orderblocks</h5>
-                    <p class="card-text">Complete order block analysis including liquidity, BOS, and reaction. Tools: Box.</p>
-                    <a href="{{ url_for('orderblocks') }}" class="btn btn-primary">Start Practice</a>
+            <div class="col-md-6 col-lg-4 mb-4">
+                <div class="card exam-card">
+                    <div class="card-body text-center">
+                        <h5 class="card-title">Orderblocks</h5>
+                        <p class="card-text">Practice identifying orderblocks on the chart.</p>
+                        <a href="/charting_exam/orderblocks" class="btn btn-primary">Start Practice</a>
+                    </div>
                 </div>
             </div>
         </div>
     </div>
-</div>
-{% endblock %}
+</body>
+</html>

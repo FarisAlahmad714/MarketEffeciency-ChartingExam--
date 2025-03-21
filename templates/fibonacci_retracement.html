@@ -1,12 +1,10 @@
 {% extends "base.html" %}
-
 {% block title %}Fibonacci Retracement Exam{% endblock %}
-
 {% block content %}
 <div class="container">
     <h2>Fibonacci Retracement</h2>
-    <p>Select a swing high and low on the chart to draw Fibonacci retracement levels.</p>
-    
+    <p>Select two points on the chart to draw Fibonacci retracement levels. Draw at least one retracement to submit.</p>
+
     <!-- Progress indicator -->
     <div class="exam-progress">
         <span class="chart-indicator">Chart <span id="current-chart">{{ progress.chart_count|default(1) }}</span>/5</span>
@@ -14,16 +12,24 @@
             <div class="chart-progress" style="width: {{ (progress.chart_count|default(1) / 5) * 100 }}%"></div>
         </div>
     </div>
-    
+
     <!-- Chart and results container -->
     <div class="exam-container">
         <div class="chart-section">
             <h3 id="chart-symbol">Symbol: {{ symbol|default('Unknown') }} ({{ timeframe|default('Unknown') }})</h3>
-            <div id="chart" style="width: 800px; height: 600px;"></div>
+            <div id="chart-container" style="position: relative; width: 800px; height: 600px;">
+                <div id="chart" style="width: 100%; height: 100%;"></div>
+                <div id="fibonacci-panel" class="fibonacci-panel">
+                    <div class="panel-header">Fibonacci Retracements</div>
+                    <div id="fibonacci-list" class="panel-content"></div>
+                </div>
+            </div>
             
             <div class="toolbar mt-3">
-                <button id="select-high" class="btn btn-primary">Select Swing High</button>
-                <button id="select-low" class="btn btn-primary">Select Swing Low</button>
+                <button id="draw-fibonacci" class="btn btn-primary">Draw Fibonacci</button>
+                <button id="undo-fibonacci" class="btn btn-warning">Undo</button>
+                <button id="clear-fibonacci" class="btn btn-secondary">Clear Retracements</button>
+                <button id="toggle-theme" class="btn btn-dark">Toggle Light Mode</button>
                 <button id="submit-btn" class="btn btn-success">Submit Answer</button>
             </div>
         </div>
@@ -70,102 +76,223 @@
     const chart = LightweightCharts.createChart(document.getElementById('chart'), {
         width: 800,
         height: 600,
-        layout: { background: { color: '#ffffff' }, textColor: '#333333' },
-        timeScale: { timeVisible: true, secondsVisible: false }
+        layout: { 
+            background: { color: '#1e1e1e' }, // Default dark mode
+            textColor: '#d1d4dc' // Light text
+        },
+        grid: { // No grid lines
+            vertLines: { visible: false },
+            horzLines: { visible: false }
+        },
+        timeScale: { timeVisible: true, secondsVisible: false },
+        crosshair: {
+            mode: LightweightCharts.CrosshairMode.Normal,
+            vertLine: { visible: true, labelVisible: true },
+            horzLine: { visible: true, labelVisible: true }
+        }
     });
     const candleSeries = chart.addCandlestickSeries();
     candleSeries.setData(chartData);
     chart.timeScale().fitContent();
 
-    let selectingHigh = false;
-    let selectingLow = false;
-    let swingHigh = null;
-    let swingLow = null;
-    let fibLines = [];
+    let drawingActive = false;
+    let userFibonacci = [];
+    let priceLines = [];
+    let correctPriceLines = [];
+    let startPoint = null;
+    let isLightMode = false; // Default is dark mode
 
-    document.getElementById('select-high').addEventListener('click', () => {
-        selectingHigh = !selectingHigh;
-        selectingLow = false;
-        document.getElementById('select-high').textContent = selectingHigh ? 'Cancel High' : 'Select Swing High';
-        document.getElementById('select-low').textContent = 'Select Swing Low';
-        console.log("Selecting high:", selectingHigh);
-    });
+    // Your preferred Fibonacci levels
+    const fibLevels = [
+        { level: 0, label: "0" },
+        { level: 0.618, label: "0.618" },
+        { level: 0.66, label: "0.66" },
+        { level: 0.705, label: "0.705" },
+        { level: 1, label: "1" },
+        { level: 1.272, label: "1.272" },
+        { level: 1.618, label: "1.618" }
+    ];
 
-    document.getElementById('select-low').addEventListener('click', () => {
-        selectingLow = !selectingLow;
-        selectingHigh = false;
-        document.getElementById('select-low').textContent = selectingLow ? 'Cancel Low' : 'Select Swing Low';
-        document.getElementById('select-high').textContent = 'Select Swing High';
-        console.log("Selecting low:", selectingLow);
-    });
+    const userColors = {
+        0: '#FFFFFF',
+        0.618: '#F7F703',
+        0.66: '#F7F703',
+        0.705: '#F7F703',
+        1: '#FFFFFF',
+        1.272: '#FFFFFF',
+        1.618: '#FFFFFF'
+    };
 
-    chart.subscribeClick((param) => {
-        if ((selectingHigh || selectingLow) && param.time) {
-            const price = param.seriesPrices.get(candleSeries);
-            if (price) {
-                const candle = chartData.find(c => c.time === param.time);
-                if (selectingHigh) {
-                    swingHigh = { time: param.time, price: price.high };
-                    selectingHigh = false;
-                    document.getElementById('select-high').textContent = 'Select Swing High';
-                    candleSeries.setMarkers([{ time: param.time, position: 'aboveBar', color: 'blue', shape: 'circle' }]);
-                    console.log("Swing high selected:", swingHigh);
-                } else if (selectingLow) {
-                    swingLow = { time: param.time, price: price.low };
-                    selectingLow = false;
-                    document.getElementById('select-low').textContent = 'Select Swing Low';
-                    candleSeries.setMarkers([{ time: param.time, position: 'belowBar', color: 'blue', shape: 'circle' }]);
-                    console.log("Swing low selected:", swingLow);
-                }
+    const correctColor = '#00FF00';
 
-                // Draw Fibonacci levels if both high and low are selected
-                if (swingHigh && swingLow) {
-                    drawFibonacciLevels();
-                }
+    // Toggle to light mode
+    document.getElementById('toggle-theme').addEventListener('click', () => {
+        isLightMode = !isLightMode;
+        chart.applyOptions({
+            layout: {
+                background: { color: isLightMode ? '#ffffff' : '#1e1e1e' },
+                textColor: isLightMode ? '#333333' : '#d1d4dc'
             }
+        });
+        document.getElementById('toggle-theme').textContent = isLightMode ? 'Toggle Dark Mode' : 'Toggle Light Mode';
+    });
+
+    function updateFibonacciPanel() {
+        const fibonacciList = document.getElementById('fibonacci-list');
+        if (userFibonacci.length === 0) {
+            fibonacciList.innerHTML = '<p>No Fibonacci retracements drawn yet.</p>';
+            return;
+        }
+        fibonacciList.innerHTML = userFibonacci.map((fib, index) => {
+            const startDate = new Date(fib.start.time * 1000).toLocaleDateString();
+            const endDate = new Date(fib.end.time * 1000).toLocaleDateString();
+            return `
+                <div class="fibonacci-item">
+                    <span class="fibonacci-label">Fib ${index + 1}</span>
+                    <span class="fibonacci-range">From ${fib.start.price.toFixed(2)} (${startDate}) to ${fib.end.price.toFixed(2)} (${endDate})</span>
+                </div>
+            `;
+        }).join('');
+    }
+
+    function drawFibonacciLevels(start, end, colors) {
+        const priceDiff = end.price - start.price;
+        const newPriceLines = fibLevels.map(fib => {
+            const price = start.price + (priceDiff * fib.level);
+            const color = colors[fib.level] || '#FFFFFF';
+            return candleSeries.createPriceLine({
+                price: price,
+                color: color,
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Solid,
+                axisLabelVisible: true,
+                title: fib.label
+            });
+        });
+        priceLines.push(...newPriceLines);
+    }
+
+    function removeFibonacciLevels(index) {
+        const levelsPerFib = fibLevels.length;
+        const startIndex = index * levelsPerFib;
+        const endIndex = startIndex + levelsPerFib;
+        for (let i = startIndex; i < endIndex; i++) {
+            if (priceLines[i]) {
+                candleSeries.removePriceLine(priceLines[i]);
+            }
+        }
+        priceLines.splice(startIndex, levelsPerFib);
+    }
+
+    function drawCorrectFibonacciLevels(correctStart, correctEnd) {
+        if (!correctStart || !correctEnd || typeof correctStart.price === 'undefined' || typeof correctEnd.price === 'undefined') {
+            console.error('Invalid correct Fibonacci points:', { correctStart, correctEnd });
+            return;
+        }
+        const priceDiff = correctEnd.price - correctStart.price;
+        const newCorrectPriceLines = fibLevels.map(fib => {
+            const price = correctStart.price + (priceDiff * fib.level);
+            return candleSeries.createPriceLine({
+                price: price,
+                color: correctColor,
+                lineWidth: 2,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: 'Correct ' + fib.label
+            });
+        });
+        correctPriceLines.push(...newCorrectPriceLines);
+    }
+
+    function removeCorrectFibonacciLevels() {
+        correctPriceLines.forEach(line => candleSeries.removePriceLine(line));
+        correctPriceLines = [];
+    }
+
+    const panel = document.getElementById('fibonacci-panel');
+    let isDragging = false;
+    let currentX;
+    let currentY;
+    let xOffset = 0;
+    let yOffset = 0;
+
+    panel.addEventListener('mousedown', startDragging);
+    document.addEventListener('mousemove', drag);
+    document.addEventListener('mouseup', stopDragging);
+
+    function startDragging(e) {
+        if (e.target.classList.contains('panel-header')) {
+            isDragging = true;
+            currentX = e.clientX - xOffset;
+            currentY = e.clientY - yOffset;
+        }
+    }
+
+    function drag(e) {
+        if (isDragging) {
+            e.preventDefault();
+            xOffset = e.clientX - currentX;
+            yOffset = e.clientY - currentY;
+            
+            const container = document.getElementById('chart-container');
+            const maxX = container.offsetWidth - panel.offsetWidth;
+            const maxY = container.offsetHeight - panel.offsetHeight;
+            xOffset = Math.max(0, Math.min(xOffset, maxX));
+            yOffset = Math.max(0, Math.min(yOffset, maxY));
+            
+            panel.style.left = xOffset + 'px';
+            panel.style.top = yOffset + 'px';
+        }
+    }
+
+    function stopDragging() {
+        isDragging = false;
+    }
+
+    document.getElementById('draw-fibonacci').addEventListener('click', () => {
+        drawingActive = !drawingActive;
+        document.getElementById('draw-fibonacci').textContent = drawingActive ? 'Stop Drawing' : 'Draw Fibonacci';
+        if (!drawingActive) {
+            startPoint = null;
         }
     });
 
-    function drawFibonacciLevels() {
-        // Remove existing Fibonacci lines
-        fibLines.forEach(line => candleSeries.removePriceLine(line));
-        fibLines = [];
+    document.getElementById('undo-fibonacci').addEventListener('click', () => {
+        if (userFibonacci.length > 0) {
+            const lastIndex = userFibonacci.length - 1;
+            removeFibonacciLevels(lastIndex);
+            userFibonacci.pop();
+            updateFibonacciPanel();
+        }
+    });
 
-        const highPrice = Math.max(swingHigh.price, swingLow.price);
-        const lowPrice = Math.min(swingHigh.price, swingLow.price);
-        const range = highPrice - lowPrice;
+    document.getElementById('clear-fibonacci').addEventListener('click', () => {
+        userFibonacci.forEach((_, index) => removeFibonacciLevels(index));
+        userFibonacci = [];
+        priceLines = [];
+        updateFibonacciPanel();
+    });
 
-        const fibLevels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
-        fibLevels.forEach(level => {
-            const price = highPrice - (range * level);
-            const line = candleSeries.createPriceLine({
-                price: price,
-                color: 'purple',
-                lineWidth: 1,
-                lineStyle: LightweightCharts.LineStyle.Dashed,
-                axisLabelVisible: true,
-                title: `${(level * 100).toFixed(1)}%`
-            });
-            fibLines.push(line);
-        });
-    }
+    chart.subscribeClick((param) => {
+        if (!drawingActive || !param.point) return;
 
-    function overlayExpectedFibonacci(expected) {
-        expected.levels.forEach(level => {
-            candleSeries.createPriceLine({
-                price: level.price,
-                color: 'green',
-                lineWidth: 1,
-                lineStyle: LightweightCharts.LineStyle.Dashed,
-                axisLabelVisible: true,
-                title: `${(level.level * 100).toFixed(1)}% (Expected)`
-            });
-        });
-    }
+        const price = candleSeries.coordinateToPrice(param.point.y);
+        const time = chart.timeScale().coordinateToTime(param.point.x);
+        if (!startPoint) {
+            startPoint = { time, price };
+        } else {
+            const endPoint = { time, price };
+            const fib = { start: startPoint, end: endPoint };
+            userFibonacci.push(fib);
+            drawFibonacciLevels(fib.start, fib.end, userColors);
+            updateFibonacciPanel();
+            startPoint = null;
+        }
+    });
 
     document.getElementById('submit-btn').addEventListener('click', () => {
-        if (!swingHigh || !swingLow) {
-            alert("Please select both a swing high and a swing low before submitting.");
+        if (userFibonacci.length === 0) {
+            alert("Please draw at least one Fibonacci retracement before submitting.");
             return;
         }
 
@@ -179,20 +306,22 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
                 examType: 'fibonacci_retracement',
-                drawings: { swingHigh, swingLow },
+                drawings: userFibonacci,
                 chartCount: chartCount
             })
         })
         .then(response => response.json())
         .then(data => {
-            chartCount = data.chart_count;
+            console.log('Server response:', data);
+            const correctStart = data.expected.start;
+            const correctEnd = data.expected.end;
+            drawCorrectFibonacciLevels(correctStart, correctEnd);
+
             chartScores.push({
                 chart: chartCount,
                 score: data.score,
                 total: data.totalExpectedPoints
             });
-
-            overlayExpectedFibonacci(data.expected);
 
             let resultsHtml = `
                 <div class="results-summary">
@@ -200,53 +329,83 @@
                 </div>
                 <div class="score-statistics">
                     <div class="stat-row">
-                        <span class="stat-label">Total Fibonacci levels expected:</span>
+                        <span class="stat-label">Total expected retracements:</span>
                         <span class="stat-value neutral">${data.totalExpectedPoints}</span>
                     </div>
                     <div class="stat-row">
-                        <span class="stat-label">Correctly identified levels:</span>
+                        <span class="stat-label">Retracements you drew:</span>
+                        <span class="stat-value neutral">${userFibonacci.length}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Correctly identified:</span>
                         <span class="stat-value ${data.score > 0 ? 'good' : 'poor'}">${data.score}</span>
                     </div>
                     <div class="stat-row">
-                        <span class="stat-label">Incorrect levels:</span>
-                        <span class="stat-value ${data.feedback.incorrect.length > 0 ? 'poor' : 'good'}">${data.feedback.incorrect.length}</span>
+                        <span class="stat-label">Incorrectly placed:</span>
+                        <span class="stat-value ${data.feedback.incorrect.filter(f => f.type !== 'missed_retracement').length > 0 ? 'poor' : 'good'}">${data.feedback.incorrect.filter(f => f.type !== 'missed_retracement').length}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Missed retracements:</span>
+                        <span class="stat-value ${data.feedback.incorrect.filter(f => f.type === 'missed_retracement').length > 0 ? 'poor' : 'good'}">${data.feedback.incorrect.filter(f => f.type === 'missed_retracement').length}</span>
                     </div>
                 </div>
                 <div class="score-bar-container">
-                    <div class="score-bar" style="width: ${(data.score/data.totalExpectedPoints)*100}%"></div>
+                    <div class="score-bar" style="width: ${data.totalExpectedPoints > 0 ? (data.score/data.totalExpectedPoints)*100 : 0}%"></div>
                 </div>
             `;
 
             if (data.feedback.correct.length > 0) {
                 resultsHtml += `
                     <div class="feedback-section correct-section">
-                        <h4>Correct Levels</h4>
-                        <ul class="feedback-list">
-                            ${data.feedback.correct.map(level => `
-                                <li>
-                                    <span class="point-type">${(level.level * 100).toFixed(1)}%</span>
-                                    <span class="point-value">${level.price.toFixed(4)}</span>
-                                    <span class="point-advice">${level.advice}</span>
-                                </li>
-                            `).join('')}
-                        </ul>
+                        <h4>Correct Retracements</h4>
+                        <div class="feedback-grid">
+                            ${data.feedback.correct.map(fib => {
+                                const direction = fib.direction || 'unknown';
+                                return `
+                                    <div class="feedback-card">
+                                        <span class="feedback-type ${direction === 'uptrend' ? 'high' : 'low'}">${direction.toUpperCase()}</span>
+                                        <span class="feedback-price">From ${fib.startPrice.toFixed(4)} to ${fib.endPrice.toFixed(4)}</span>
+                                        <p class="feedback-advice">${fib.advice}</p>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
                     </div>
                 `;
             }
 
-            if (data.feedback.incorrect.length > 0) {
+            const incorrectFibs = data.feedback.incorrect.filter(f => f.type !== 'missed_retracement');
+            if (incorrectFibs.length > 0) {
                 resultsHtml += `
                     <div class="feedback-section incorrect-section">
-                        <h4>Incorrect Levels</h4>
-                        <ul class="feedback-list">
-                            ${data.feedback.incorrect.map(level => `
-                                <li>
-                                    <span class="point-type">${(level.level * 100).toFixed(1)}%</span>
-                                    <span class="point-value">${level.price.toFixed(4)}</span>
-                                    <span class="point-advice">${level.advice}</span>
-                                </li>
+                        <h4>Incorrect Retracements</h4>
+                        <div class="feedback-grid">
+                            ${incorrectFibs.map(fib => `
+                                <div class="feedback-card">
+                                    <span class="feedback-type ${fib.direction === 'uptrend' ? 'high' : 'low'}">${fib.direction.toUpperCase()}</span>
+                                    <span class="feedback-price">From ${fib.startPrice.toFixed(4)} to ${fib.endPrice.toFixed(4)}</span>
+                                    <p class="feedback-advice">${fib.advice}</p>
+                                </div>
                             `).join('')}
-                        </ul>
+                        </div>
+                    </div>
+                `;
+            }
+
+            const missedFibs = data.feedback.incorrect.filter(f => f.type === 'missed_retracement');
+            if (missedFibs.length > 0) {
+                resultsHtml += `
+                    <div class="feedback-section missed-section">
+                        <h4>Missed Retracements</h4>
+                        <div class="feedback-grid">
+                            ${missedFibs.map(fib => `
+                                <div class="feedback-card">
+                                    <span class="feedback-type missed">MISSED</span>
+                                    <span class="feedback-price">From ${fib.startPrice.toFixed(4)} to ${fib.endPrice.toFixed(4)}</span>
+                                    <p class="feedback-advice">${fib.advice}</p>
+                                </div>
+                            `).join('')}
+                        </div>
                     </div>
                 `;
             }
@@ -258,27 +417,34 @@
             document.querySelector('.exam-container').classList.add('with-results');
 
             document.getElementById('continue-btn').onclick = function() {
-                if (chartCount >= maxCharts) {
+                removeCorrectFibonacciLevels();
+                chartCount++;
+                if (chartCount > maxCharts) {
                     showFinalResults();
                 } else {
                     fetch('/fetch_new_chart')
                         .then(response => response.json())
                         .then(data => {
+                            chartData = data.chart_data;
                             candleSeries.setData(data.chart_data);
-                            chartCount = data.chart_count;
                             document.getElementById('current-chart').textContent = chartCount;
                             document.querySelector('.chart-progress').style.width = `${(chartCount / maxCharts) * 100}%`;
                             document.getElementById('chart-symbol').textContent = `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
-                            swingHigh = null;
-                            swingLow = null;
-                            fibLines.forEach(line => candleSeries.removePriceLine(line));
-                            fibLines = [];
-                            candleSeries.setMarkers([]);
-                            if (chartCount >= maxCharts) {
+                            userFibonacci = [];
+                            priceLines.forEach(line => candleSeries.removePriceLine(line));
+                            priceLines = [];
+                            updateFibonacciPanel();
+                            chart.timeScale().resetTimeScale();
+                            chart.timeScale().fitContent();
+                            if (chartCount === maxCharts) {
                                 document.getElementById('continue-btn').textContent = "Finish Exam";
                             }
                             resultsSection.classList.remove('active');
                             document.querySelector('.exam-container').classList.remove('with-results');
+                            panel.style.left = '10px';
+                            panel.style.top = '10px';
+                            xOffset = 10;
+                            yOffset = 10;
                         })
                         .catch(error => {
                             console.error('Error fetching new chart:', error);
@@ -309,7 +475,7 @@
     function showFinalResults() {
         const totalScore = chartScores.reduce((sum, chart) => sum + chart.score, 0);
         const totalPossible = chartScores.reduce((sum, chart) => sum + chart.total, 0);
-        const percentage = Math.round((totalScore / totalPossible) * 100);
+        const percentage = totalScore > 0 && totalPossible > 0 ? Math.round((totalScore / totalPossible) * 100) : 0;
 
         const resultsContent = document.getElementById('results-content');
         resultsContent.innerHTML = `
@@ -330,7 +496,7 @@
                                 <span class="chart-number">Chart ${index + 1}</span>
                                 <span class="chart-score">${chart.score}/${chart.total}</span>
                                 <div class="chart-mini-bar">
-                                    <div class="chart-mini-progress" style="width: ${(chart.score/chart.total)*100}%"></div>
+                                    <div class="chart-mini-progress" style="width: ${chart.total > 0 ? (chart.score/chart.total)*100 : 0}%"></div>
                                 </div>
                             </li>
                         `).join('')}
@@ -343,6 +509,8 @@
         `;
         document.getElementById('continue-btn').style.display = 'none';
     }
+
+    updateFibonacciPanel();
 </script>
 
 <style>
@@ -429,25 +597,68 @@
         background: #4CAF50;
         border-radius: 5px;
     }
+    .feedback-section {
+        margin-top: 15px;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    .correct-section {
+        background: #e8f5e9;
+        border: 1px solid #4CAF50;
+    }
+    .incorrect-section {
+        background: #ffebee;
+        border: 1px solid #F44336;
+    }
+    .missed-section {
+        background: #fff3e0;
+        border: 1px solid #FF9800;
+    }
     .feedback-section h4 {
-        margin: 10px 0 5px;
+        margin: 0 0 10px;
+        font-size: 1.1rem;
     }
-    .feedback-list {
-        list-style: none;
-        padding: 0;
+    .feedback-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
     }
-    .feedback-list li {
-        margin-bottom: 5px;
+    .feedback-card {
+        background: #fff;
+        padding: 8px;
+        border-radius: 4px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
     }
-    .point-type {
+    .feedback-type {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 0.8rem;
         font-weight: bold;
-        margin-right: 5px;
+        color: #fff;
     }
-    .point-value {
-        margin-right: 5px;
+    .feedback-type.high {
+        background: #4CAF50;
     }
-    .point-advice {
+    .feedback-type.low {
+        background: #2196F3;
+    }
+    .feedback-type.missed {
+        background: #FF9800;
+    }
+    .feedback-price {
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: #333;
+    }
+    .feedback-advice {
+        margin: 0;
+        font-size: 0.85rem;
         color: #666;
+        font-style: italic;
     }
     .final-score {
         display: flex;
@@ -541,6 +752,47 @@
     @keyframes spin {
         0% { transform: rotate(0deg); }
         100% { transform: rotate(360deg); }
+    }
+    .fibonacci-panel {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        width: 200px;
+        max-height: 200px;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        z-index: 10;
+        overflow-y: auto;
+        font-size: 0.9rem;
+    }
+    .panel-header {
+        background: #4CAF50;
+        color: white;
+        padding: 5px;
+        text-align: center;
+        cursor: move;
+        font-weight: bold;
+    }
+    .panel-content {
+        padding: 5px;
+    }
+    .fibonacci-item {
+        margin-bottom: 5px;
+        padding: 3px;
+        border-bottom: 1px solid #eee;
+    }
+    .fibonacci-item:last-child {
+        border-bottom: none;
+    }
+    .fibonacci-label {
+        font-weight: bold;
+        color: #333;
+    }
+    .fibonacci-range {
+        display: block;
+        color: #666;
     }
 </style>
 {% endblock %}
