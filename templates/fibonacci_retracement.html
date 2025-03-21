@@ -31,6 +31,7 @@
                 <button id="clear-fibonacci" class="btn btn-secondary">Clear Retracements</button>
                 <button id="toggle-theme" class="btn btn-dark">Toggle Light Mode</button>
                 <button id="submit-btn" class="btn btn-success">Submit Answer</button>
+                <button id="reset-exam" class="btn btn-danger">Reset Exam</button>
             </div>
         </div>
         
@@ -61,7 +62,7 @@
     console.log("fibonacciPart:", {{ progress.fibonacci_part|default(1)|tojson|safe }});
     console.log("chartData:", {{ chart_data|tojson|safe }});
 
-    let chartCount = {{ progress.chart_count|default(1)|tojson|safe }} || 1;
+    let chartCount = Math.min({{ progress.chart_count|default(1)|tojson|safe }} || 1, 5);
     let fibonacciPart = {{ progress.fibonacci_part|default(1)|tojson|safe }} || 1; // 1 = uptrend, 2 = downtrend
     const maxCharts = 5;
     let chartScores = [];
@@ -277,6 +278,24 @@
         priceLines = [];
         updateFibonacciPanel();
     });
+    
+    document.getElementById('reset-exam').addEventListener('click', () => {
+        if (confirm('Are you sure you want to reset the exam? This will clear all your progress.')) {
+            // Force reset by clearing local data and redirecting through the exams page
+            chartCount = 1;
+            fibonacciPart = 1;
+            chartScores = [];
+            userFibonacci = [];
+            priceLines.forEach(line => candleSeries.removePriceLine(line));
+            priceLines = [];
+            document.getElementById('current-chart').textContent = "1";
+            document.querySelector('.chart-progress').style.width = "20%";
+            
+            // Redirect through charting_exams to reset session
+            fetch('/charting_exams')
+                .then(() => window.location.href = '/charting_exam/fibonacci_retracement');
+        }
+    });
 
     chart.subscribeClick((param) => {
         if (!drawingActive || !param.point) return;
@@ -435,7 +454,7 @@
                 console.log(`Part 2 complete, incrementing chartCount from ${chartCount}`);
                 chartCount = data.chart_count;
                 console.log(`New chartCount: ${chartCount}`);
-                if (chartCount > maxCharts) {
+                if (chartCount >= maxCharts) {
                     console.log("Exam finished, showing final results");
                     showFinalResults();
                     return;
@@ -497,7 +516,7 @@
 
     updateInstructions();
     updateFibonacciPanel();
-
+    
     function showFinalResults() {
         // Create the final results view
         let totalScore = 0;
@@ -577,7 +596,6 @@
         };
     }
 </script>
-
 
 <style>
     .exam-progress {

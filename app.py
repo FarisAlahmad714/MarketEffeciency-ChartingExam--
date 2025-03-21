@@ -10,25 +10,19 @@ app.secret_key = 'your-secret-key-here'
 logging.basicConfig(level=logging.DEBUG)
 
 def fetch_chart_data(coin=None, timeframe=None, limit=50):
-    # Define available coins
-    all_coins = [
-        'bitcoin', 'ethereum', 'binancecoin', 'solana', 
-        'cosmos', 'ripple', 'litecoin', 'chainlink'
-    ]
-    # Define which coins can appear in 1h timeframe
+    # Define available coins and timeframes
+    all_coins = ['bitcoin', 'ethereum', 'binancecoin', 'solana', 'cosmos', 'ripple', 'litecoin', 'chainlink']
     hourly_coins = ['bitcoin', 'ethereum', 'binancecoin', 'solana']
-    timeframes = {'1h': 1, '4h': 7, '1d': 30}
+    timeframes = {'1h': 1, '4h': 7, '1d': 30, '1w': 90}
     
-    # First select timeframe if not provided
+    # Select timeframe if not provided
     timeframe = timeframe or random.choice(list(timeframes.keys()))
     
-    # Then select coin based on timeframe restrictions
+    # Select coin based on timeframe restrictions
     if coin is None:
         if timeframe == '1h':
-            # If 1h timeframe, only select from hourly_coins
             coin = random.choice(hourly_coins)
         else:
-            # For other timeframes, select from all coins
             coin = random.choice(all_coins)
     
     days = timeframes[timeframe]
@@ -75,7 +69,7 @@ def fetch_chart_data(coin=None, timeframe=None, limit=50):
         return dummy_data, coin, timeframe
 
 def detect_swing_points(data, lookback=5, timeframe='4h', significance_threshold=0.01):
-    lookback_map = {'1h': 8, '4h': 5, '1d': 3}
+    lookback_map = {'1h': 8, '4h': 5, '1d': 3, '1w': 2}  # Added weekly timeframe
     lookback = lookback_map.get(timeframe, 5)
 
     swing_points = {'highs': [], 'lows': []}
@@ -128,6 +122,7 @@ def determine_trend(data):
 
 @app.route('/charting_exams')
 def charting_exams():
+    # Always clear exam data when visiting the main exams page
     session.pop('exam_data', None)
     return render_template('index.html')
 
@@ -165,6 +160,11 @@ def swing_analysis():
 
 @app.route('/charting_exam/fibonacci_retracement', methods=['GET', 'POST'])
 def fibonacci_retracement():
+    # Check if we need to reset exam data
+    if request.args.get('reset') == 'true':
+        session.pop('exam_data', None)
+
+    # Initialize exam data if not present
     if 'exam_data' not in session:
         session['exam_data'] = {
             'chart_count': 1,
@@ -273,6 +273,10 @@ def orderblocks():
 @app.route('/fetch_new_chart', methods=['GET'])
 def fetch_new_chart():
     exam_data = session.get('exam_data', {'chart_count': 1, 'fibonacci_part': 1})
+    
+    # Don't change the chart count here - it was already incremented in the validation step
+    current_chart_count = exam_data.get('chart_count', 1)
+    
     chart_data, coin, timeframe = fetch_chart_data()
     if not chart_data:
         chart_data = [
@@ -280,7 +284,7 @@ def fetch_new_chart():
             {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
         ]
 
-    exam_data['chart_count'] = exam_data.get('chart_count', 1) + 1
+    # Only update these properties, don't increment the chart count here
     exam_data['fibonacci_part'] = 1  # Reset to uptrend for new chart
     exam_data['chart_data'] = chart_data
     exam_data['coin'] = coin
@@ -289,7 +293,7 @@ def fetch_new_chart():
 
     logging.debug(f"Fetch New Chart - Stored Chart Data Length: {len(chart_data)}")
     logging.debug(f"Fetch New Chart - Stored Chart Data Sample: {chart_data[:5]}")
-    logging.debug(f"Fetch New Chart - Updated chart_count: {exam_data['chart_count']}")
+    logging.debug(f"Fetch New Chart - Current chart_count: {exam_data['chart_count']}")
 
     return jsonify({
         'chart_data': chart_data,
@@ -332,9 +336,13 @@ def validate_drawing():
             exam_data['scores'][-1]['downtrend'] = validation_result['score']
             avg_score = (exam_data['scores'][-1]['uptrend'] + validation_result['score']) / 2
             exam_data['scores'][-1]['average'] = avg_score
+            
+            # Increment chart_count after completing both parts, but don't exceed maxCharts
+            current_chart_count = exam_data.get('chart_count', 1)
+            if current_chart_count < 5:  # Ensure we don't exceed the maximum
+                exam_data['chart_count'] = current_chart_count + 1
             exam_data['fibonacci_part'] = 1  # Reset for next chart
-            # Increment chart_count after completing both parts
-            exam_data['chart_count'] = chart_count + 1
+            
             session['exam_data'] = exam_data
             validation_result['next_part'] = None  # Signal completion of the chart
             chart_count = exam_data['chart_count']  # Update chart_count for response
@@ -348,7 +356,7 @@ def validate_drawing():
     return jsonify({
         'success': validation_result['success'],
         'message': validation_result['message'],
-        'chart_count': chart_count,  # Fixed: Removed duplicate chart_count
+        'chart_count': chart_count,
         'fibonacci_part': fibonacci_part if exam_type == 'fibonacci_retracement' else None,
         'next_part': validation_result.get('next_part') if exam_type == 'fibonacci_retracement' else None,
         'symbol': exam_data.get('coin', 'Unknown').upper(),
@@ -385,9 +393,9 @@ def validate_swing_points(drawings, chart_data, interval):
         }
 
     price_range = max(c['high'] for c in chart_data) - min(c['low'] for c in chart_data) if chart_data else 1
-    tolerance_map = {'1h': 0.005, '4h': 0.015, '1d': 0.025}
+    tolerance_map = {'1h': 0.005, '4h': 0.015, '1d': 0.025, '1w': 0.035}  # Added weekly timeframe
     price_tolerance = price_range * tolerance_map.get(interval, 0.02)
-    time_increment = {'1h': 3600, '4h': 14400, '1d': 86400}.get(interval, 14400)
+    time_increment = {'1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800}.get(interval, 14400)  # Added weekly
     time_tolerance = time_increment * 3
 
     matched = 0
@@ -417,7 +425,7 @@ def validate_swing_points(drawings, chart_data, interval):
                 'type': d['type'],
                 'time': d['time'],
                 'price': d['price'],
-                'advice': f"This point at price {d['price']:.2f} doesn’t match a significant swing point."
+                'advice': f"This point at price {d['price']:.2f} doesn't match a significant swing point."
             })
 
     for i, point in enumerate(highs + lows):
@@ -512,16 +520,16 @@ def validate_fibonacci_retracement(drawings, chart_data, interval, part):
             'success': False,
             'message': f"No significant {'uptrend' if part == 1 else 'downtrend'} retracement found.",
             'score': 0,
-            'feedback': {'correct': [], 'incorrect': [{'advice': f"Couldn’t find a clear {'uptrend' if part == 1 else 'downtrend'} retracement. Try another chart."}]},
+            'feedback': {'correct': [], 'incorrect': [{'advice': f"Couldn't find a clear {'uptrend' if part == 1 else 'downtrend'} retracement. Try another chart."}]},
             'totalExpectedPoints': 2,  # Still expect 2 credits even if no retracement is found
             'expected': expected_retracement
         }
 
     # Define tolerances for validation
     price_range = max(c['high'] for c in chart_data) - min(c['low'] for c in chart_data) if chart_data else 1
-    tolerance_map = {'1h': 0.01, '4h': 0.02, '1d': 0.03}
+    tolerance_map = {'1h': 0.01, '4h': 0.02, '1d': 0.03, '1w': 0.04}  # Added weekly
     price_tolerance = price_range * tolerance_map.get(interval, 0.02)
-    time_increment = {'1h': 3600, '4h': 14400, '1d': 86400}.get(interval, 14400)
+    time_increment = {'1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800}.get(interval, 14400)  # Added weekly
     time_tolerance = time_increment * 3
 
     total_credits = 2  # 1 for start, 1 for end
