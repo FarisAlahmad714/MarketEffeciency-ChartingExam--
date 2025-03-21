@@ -2,14 +2,17 @@ from flask import Flask, render_template, request, session, jsonify
 import requests
 import random
 import json
+import logging
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'
 
+logging.basicConfig(level=logging.DEBUG)
+
 def fetch_chart_data(coin=None, timeframe=None, limit=50):
     coins = [
-        'bitcoin', 'ethereum', 'binancecoin', 'solana', 'matic-network', 'polkadot',
-        'cosmos', 'tezos', 'near', 'ripple', 'litecoin', 'chainlink'
+        'bitcoin', 'ethereum', 'binancecoin', 'solana', 
+        'cosmos', 'ripple', 'litecoin', 'chainlink'
     ]
     timeframes = {'1h': 1, '4h': 7, '1d': 30}
     
@@ -134,9 +137,116 @@ def swing_analysis():
         timeframe=timeframe
     )
 
+@app.route('/charting_exam/fibonacci_retracement', methods=['GET', 'POST'])
+def fibonacci_retracement():
+    if 'exam_data' not in session:
+        session['exam_data'] = {
+            'chart_count': 1,
+            'fibonacci_part': 1,  # 1 = uptrend, 2 = downtrend
+            'scores': [],
+            'chart_data': None,
+            'coin': None,
+            'timeframe': None
+        }
+
+    exam_data = session['exam_data']
+
+    if request.method == 'GET':
+        chart_data, coin, timeframe = fetch_chart_data()
+        if not chart_data:
+            chart_data = [
+                {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
+                {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
+            ]
+        exam_data['chart_data'] = chart_data
+        exam_data['coin'] = coin
+        exam_data['timeframe'] = timeframe
+        exam_data['fibonacci_part'] = 1  # Start with uptrend
+        session['exam_data'] = exam_data
+
+        logging.debug(f"Fibonacci Retracement - Stored Chart Data Length: {len(chart_data)}")
+        logging.debug(f"Fibonacci Retracement - Stored Chart Data Sample: {chart_data[:5]}")
+
+        return render_template(
+            'fibonacci_retracement.html',
+            chart_data=chart_data,
+            progress={'chart_count': exam_data['chart_count'], 'fibonacci_part': exam_data['fibonacci_part']},
+            symbol=coin.upper(),
+            timeframe=timeframe
+        )
+    return jsonify({'message': 'Fibonacci Retracement POST received'})
+
+@app.route('/charting_exam/fair_value_gaps', methods=['GET', 'POST'])
+def fair_value_gaps():
+    if 'exam_data' not in session:
+        session['exam_data'] = {
+            'chart_count': 1,
+            'scores': [],
+            'chart_data': None,
+            'coin': None,
+            'timeframe': None
+        }
+
+    exam_data = session['exam_data']
+
+    if request.method == 'GET':
+        chart_data, coin, timeframe = fetch_chart_data()
+        if not chart_data:
+            chart_data = [
+                {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
+                {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
+            ]
+        exam_data['chart_data'] = chart_data
+        exam_data['coin'] = coin
+        exam_data['timeframe'] = timeframe
+        session['exam_data'] = exam_data
+
+        return render_template(
+            'fair_value_gaps.html',
+            chart_data=chart_data,
+            progress={'chart_count': exam_data['chart_count']},
+            symbol=coin.upper(),
+            timeframe=timeframe
+        )
+    return jsonify({'message': 'Fair Value Gaps POST received'})
+
+@app.route('/charting_exam/orderblocks', methods=['GET', 'POST'])
+def orderblocks():
+    if 'exam_data' not in session:
+        session['exam_data'] = {
+            'chart_count': 1,
+            'scores': [],
+            'chart_data': None,
+            'coin': None,
+            'timeframe': None
+        }
+
+    exam_data = session['exam_data']
+
+    if request.method == 'GET':
+        chart_data, coin, timeframe = fetch_chart_data()
+        if not chart_data:
+            chart_data = [
+                {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
+                {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
+            ]
+        exam_data['chart_data'] = chart_data
+        exam_data['coin'] = coin
+        exam_data['timeframe'] = timeframe
+        session['exam_data'] = exam_data
+
+        return render_template(
+            'orderblocks.html',
+            chart_data=chart_data,
+            progress={'chart_count': exam_data['chart_count']},
+            symbol=coin.upper(),
+            timeframe=timeframe
+        )
+    return jsonify({'message': 'Orderblocks POST received'})
+
 @app.route('/fetch_new_chart', methods=['GET'])
 def fetch_new_chart():
-    exam_data = session.get('exam_data', {'chart_count': 1})
+    exam_data = session.get('exam_data', {'chart_count': 1, 'fibonacci_part': 1})
     chart_data, coin, timeframe = fetch_chart_data()
     if not chart_data:
         chart_data = [
@@ -145,14 +255,20 @@ def fetch_new_chart():
         ]
 
     exam_data['chart_count'] = exam_data.get('chart_count', 1) + 1
+    exam_data['fibonacci_part'] = 1  # Reset to uptrend for new chart
     exam_data['chart_data'] = chart_data
     exam_data['coin'] = coin
     exam_data['timeframe'] = timeframe
     session['exam_data'] = exam_data
 
+    logging.debug(f"Fetch New Chart - Stored Chart Data Length: {len(chart_data)}")
+    logging.debug(f"Fetch New Chart - Stored Chart Data Sample: {chart_data[:5]}")
+    logging.debug(f"Fetch New Chart - Updated chart_count: {exam_data['chart_count']}")
+
     return jsonify({
         'chart_data': chart_data,
         'chart_count': exam_data['chart_count'],
+        'fibonacci_part': exam_data['fibonacci_part'],
         'symbol': coin.upper(),
         'timeframe': timeframe
     })
@@ -162,26 +278,53 @@ def validate_drawing():
     data = request.get_json()
     exam_type = data.get('examType')
     drawings = data.get('drawings', [])
-    chart_count = data.get('chartCount')
+    chart_count = data.get('chartCount')  # Frontend sends this, but we'll override with session
 
     exam_data = session.get('exam_data', {})
     chart_data = exam_data.get('chart_data', [])
     interval = exam_data.get('timeframe', '4h')
+    fibonacci_part = exam_data.get('fibonacci_part', 1) if exam_type == 'fibonacci_retracement' else None
+    chart_count = exam_data.get('chart_count', 1)  # Use session value for consistency
+
+    logging.debug(f"Validate Drawing - Chart Count: {chart_count}, Part: {fibonacci_part}")
+    logging.debug(f"Validate Drawing - Chart Data Length: {len(chart_data)}")
+    logging.debug(f"Validate Drawing - Chart Data Sample: {chart_data[:5]}")
 
     if exam_type == 'swing_analysis':
         validation_result = validate_swing_points(drawings, chart_data, interval)
     elif exam_type == 'fibonacci_retracement':
-        validation_result = validate_fibonacci_retracement(drawings, chart_data, interval)
+        validation_result = validate_fibonacci_retracement(drawings, chart_data, interval, fibonacci_part)
+        
+        if fibonacci_part == 1:
+            # Store uptrend score, switch to downtrend
+            exam_data['scores'].append({'uptrend': validation_result['score']})
+            exam_data['fibonacci_part'] = 2
+            session['exam_data'] = exam_data
+            validation_result['next_part'] = 2
+        else:
+            # Store downtrend score, average, and move on
+            exam_data['scores'][-1]['downtrend'] = validation_result['score']
+            avg_score = (exam_data['scores'][-1]['uptrend'] + validation_result['score']) / 2
+            exam_data['scores'][-1]['average'] = avg_score
+            exam_data['fibonacci_part'] = 1  # Reset for next chart
+            # Increment chart_count after completing both parts
+            exam_data['chart_count'] = chart_count + 1
+            session['exam_data'] = exam_data
+            validation_result['next_part'] = None  # Signal completion of the chart
+            chart_count = exam_data['chart_count']  # Update chart_count for response
     else:
         return jsonify({'success': False, 'message': 'Exam type not implemented yet'})
 
-    exam_data['scores'].append(validation_result['score'])
+    if exam_type != 'fibonacci_retracement':
+        exam_data['scores'].append(validation_result['score'])
     session['exam_data'] = exam_data
 
     return jsonify({
         'success': validation_result['success'],
         'message': validation_result['message'],
-        'chart_count': chart_count,
+        'chart_count': chart_count,  # Fixed: Removed duplicate chart_count
+        'fibonacci_part': fibonacci_part if exam_type == 'fibonacci_retracement' else None,
+        'next_part': validation_result.get('next_part') if exam_type == 'fibonacci_retracement' else None,
         'symbol': exam_data.get('coin', 'Unknown').upper(),
         'feedback': validation_result['feedback'],
         'score': validation_result['score'],
@@ -274,10 +417,13 @@ def validate_swing_points(drawings, chart_data, interval):
         'expected': expected
     }
 
-def validate_fibonacci_retracement(drawings, chart_data, interval):
+def validate_fibonacci_retracement(drawings, chart_data, interval, part):
     default_expected = {'start': {'time': 0, 'price': 0}, 'end': {'time': 0, 'price': 0}, 'direction': 'unknown'}
 
+    # Check if there's enough chart data
+    logging.debug(f"Validate Fibonacci - Chart Data Length: {len(chart_data)}")
     if not chart_data or len(chart_data) < 10:
+        logging.debug("Insufficient chart data in validate_fibonacci_retracement")
         return {
             'success': False,
             'message': 'Insufficient chart data for validation.',
@@ -287,52 +433,65 @@ def validate_fibonacci_retracement(drawings, chart_data, interval):
             'expected': default_expected
         }
 
+    # Detect swing points
     swing_points = detect_swing_points(chart_data, timeframe=interval)
-    highs = sorted(swing_points['highs'], key=lambda x: x['price'], reverse=True)
-    lows = sorted(swing_points['lows'], key=lambda x: x['price'])
+    highs = swing_points['highs']
+    lows = swing_points['lows']
+
+    logging.debug(f"Validate Fibonacci - Detected {len(highs)} highs and {len(lows)} lows")
 
     if len(highs) < 1 or len(lows) < 1:
+        logging.debug("Not enough significant swing points for a retracement")
         return {
             'success': False,
-            'message': 'Not enough significant swing points to form a Fibonacci retracement.',
+            'message': 'Not enough significant swing points for a retracement.',
             'score': 0,
-            'feedback': {'correct': [], 'incorrect': [{'advice': 'This chart does not have enough significant swing points for a Fibonacci retracement. Try another chart.'}]},
+            'feedback': {'correct': [], 'incorrect': [{'advice': 'This chart lacks clear swing points. Try another chart.'}]},
             'totalExpectedPoints': 0,
             'expected': default_expected
         }
 
-    trend = determine_trend(chart_data)
-    print(f"Detected trend: {trend}")
-
-    if trend == 'uptrend':
-        swing_high = max(highs, key=lambda x: x['time'])
-        swing_low = max([low for low in lows if low['time'] < swing_high['time']], key=lambda x: x['time'], default=None)
-        expected_direction = 'uptrend'
-    elif trend == 'downtrend':
-        swing_low = min(lows, key=lambda x: x['time'])
-        swing_high = min([high for high in highs if high['time'] > swing_low['time']], key=lambda x: x['time'], default=None)
-        expected_direction = 'downtrend'
+    # For uptrend (part 1): Find the most recent swing low with a subsequent swing high
+    lows_with_subsequent_high = [low for low in lows if any(high['time'] > low['time'] for high in highs)]
+    if lows_with_subsequent_high:
+        uptrend_low = max(lows_with_subsequent_high, key=lambda x: x['time'])
+        subsequent_highs = [high for high in highs if high['time'] > uptrend_low['time']]
+        uptrend_high = max(subsequent_highs, key=lambda x: x['time']) if subsequent_highs else None
     else:
-        swing_high = highs[0]
-        swing_low = lows[0]
-        expected_direction = 'uptrend' if swing_low['time'] < swing_high['time'] else 'downtrend'
+        uptrend_low = None
+        uptrend_high = None
 
-    if not swing_high or not swing_low:
+    # For downtrend (part 2): Find the most recent swing high with a subsequent swing low
+    highs_with_subsequent_low = [high for high in highs if any(low['time'] > high['time'] for low in lows)]
+    if highs_with_subsequent_low:
+        downtrend_high = max(highs_with_subsequent_low, key=lambda x: x['time'])
+        subsequent_lows = [low for low in lows if low['time'] > downtrend_high['time']]
+        downtrend_low = max(subsequent_lows, key=lambda x: x['time']) if subsequent_lows else None
+    else:
+        downtrend_high = None
+        downtrend_low = None
+
+    # Determine expected retracement based on the part
+    expected_retracement = (
+        {'start': uptrend_low, 'end': uptrend_high, 'direction': 'uptrend'} if part == 1 and uptrend_low and uptrend_high else
+        {'start': downtrend_high, 'end': downtrend_low, 'direction': 'downtrend'} if part == 2 and downtrend_high and downtrend_low else
+        default_expected
+    )
+
+    logging.debug(f"Validate Fibonacci - Expected Retracement: {expected_retracement}")
+
+    if expected_retracement == default_expected:
+        logging.debug(f"No significant {'uptrend' if part == 1 else 'downtrend'} retracement found")
         return {
             'success': False,
-            'message': 'Could not determine a significant retracement in this chart.',
+            'message': f"No significant {'uptrend' if part == 1 else 'downtrend'} retracement found.",
             'score': 0,
-            'feedback': {'correct': [], 'incorrect': [{'advice': 'This chart does not have a clear retracement opportunity. Try another chart.'}]},
-            'totalExpectedPoints': 0,
-            'expected': default_expected
+            'feedback': {'correct': [], 'incorrect': [{'advice': f"Couldn’t find a clear {'uptrend' if part == 1 else 'downtrend'} retracement. Try another chart."}]},
+            'totalExpectedPoints': 1,
+            'expected': expected_retracement
         }
 
-    expected_retracement = {
-        'start': swing_low if expected_direction == 'uptrend' else swing_high,
-        'end': swing_high if expected_direction == 'uptrend' else swing_low,
-        'direction': expected_direction
-    }
-
+    # Define tolerances for validation
     price_range = max(c['high'] for c in chart_data) - min(c['low'] for c in chart_data) if chart_data else 1
     tolerance_map = {'1h': 0.01, '4h': 0.02, '1d': 0.03}
     price_tolerance = price_range * tolerance_map.get(interval, 0.02)
@@ -342,14 +501,14 @@ def validate_fibonacci_retracement(drawings, chart_data, interval):
     matched = 0
     feedback = {'correct': [], 'incorrect': []}
 
+    # Validate user drawings
     for fib in drawings:
         start_matched = (abs(fib['start']['time'] - expected_retracement['start']['time']) < time_tolerance and
                          abs(fib['start']['price'] - expected_retracement['start']['price']) < price_tolerance)
         end_matched = (abs(fib['end']['time'] - expected_retracement['end']['time']) < time_tolerance and
                        abs(fib['end']['price'] - expected_retracement['end']['price']) < price_tolerance)
-        
         user_direction = 'uptrend' if fib['end']['price'] > fib['start']['price'] else 'downtrend'
-        direction_matched = user_direction == expected_direction
+        direction_matched = user_direction == expected_retracement['direction']
 
         if start_matched and end_matched and direction_matched:
             matched += 1
@@ -357,140 +516,53 @@ def validate_fibonacci_retracement(drawings, chart_data, interval):
                 'direction': user_direction,
                 'startPrice': fib['start']['price'],
                 'endPrice': fib['end']['price'],
-                'advice': f"Good job! You correctly drew a Fibonacci retracement for an {user_direction} from {fib['start']['price']:.2f} to {fib['end']['price']:.2f}."
+                'advice': f"Spot on! You nailed the {user_direction} retracement from {fib['start']['price']:.2f} to {fib['end']['price']:.2f}."
             })
         else:
-            feedback['incorrect'].append({
-                'type': 'incorrect_retracement',
-                'direction': user_direction,
-                'startPrice': fib['start']['price'],
-                'endPrice': fib['end']['price'],
-                'advice': f"This retracement from {fib['start']['price']:.2f} to {fib['end']['price']:.2f} does not match the expected {expected_direction} retracement."
-            })
+            start_close = (abs(fib['start']['time'] - expected_retracement['start']['time']) < time_tolerance * 2 and
+                           abs(fib['start']['price'] - expected_retracement['start']['price']) < price_tolerance * 2)
+            end_close = (abs(fib['end']['time'] - expected_retracement['end']['time']) < time_tolerance * 2 and
+                         abs(fib['end']['price'] - expected_retracement['end']['price']) < price_tolerance * 2)
+            if start_close and end_close and direction_matched:
+                matched += 0.7  # Partial credit
+                feedback['incorrect'].append({
+                    'type': 'close_retracement',
+                    'direction': user_direction,
+                    'startPrice': fib['start']['price'],
+                    'endPrice': fib['end']['price'],
+                    'advice': f"Close call! Your {user_direction} from {fib['start']['price']:.2f} to {fib['end']['price']:.2f} is near the mark—adjust slightly."
+                })
+            else:
+                feedback['incorrect'].append({
+                    'type': 'incorrect_retracement',
+                    'direction': user_direction,
+                    'startPrice': fib['start']['price'],
+                    'endPrice': fib['end']['price'],
+                    'advice': f"This {user_direction} from {fib['start']['price']:.2f} to {fib['end']['price']:.2f} doesn’t match the expected retracement."
+                })
 
     if matched == 0:
         feedback['incorrect'].append({
             'type': 'missed_retracement',
-            'direction': expected_direction,
+            'direction': expected_retracement['direction'],
             'startPrice': expected_retracement['start']['price'],
             'endPrice': expected_retracement['end']['price'],
-            'advice': f"You missed the significant {expected_direction} retracement from {expected_retracement['start']['price']:.2f} to {expected_retracement['end']['price']:.2f}."
+            'advice': f"You missed the {expected_retracement['direction']} retracement from {expected_retracement['start']['price']:.2f} to {expected_retracement['end']['price']:.2f}."
         })
 
     total_expected = 1
-    success = matched == total_expected
-    score = matched
+    success = matched >= 1
+    score = min(matched, 1.0)  # Cap at 1.0 per part
 
     return {
         'success': success,
-        'message': 'Fibonacci retracement identified correctly!' if success else 'The retracement was incorrect or missed.',
+        'message': f"{'Uptrend' if part == 1 else 'Downtrend'} retracement {'correct' if success else 'needs work'}!",
         'score': score,
         'feedback': feedback,
         'totalExpectedPoints': total_expected,
-        'expected': expected_retracement
+        'expected': expected_retracement,
+        'next_part': 2 if part == 1 else None  # Indicate next part or end of chart
     }
-
-@app.route('/charting_exam/fibonacci_retracement', methods=['GET', 'POST'])
-def fibonacci_retracement():
-    if 'exam_data' not in session:
-        session['exam_data'] = {
-            'chart_count': 1,
-            'scores': [],
-            'chart_data': None,
-            'coin': None,
-            'timeframe': None
-        }
-
-    exam_data = session['exam_data']
-
-    if request.method == 'GET':
-        chart_data, coin, timeframe = fetch_chart_data()
-        if not chart_data:
-            chart_data = [
-                {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
-                {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
-            ]
-        exam_data['chart_data'] = chart_data
-        exam_data['coin'] = coin
-        exam_data['timeframe'] = timeframe
-        session['exam_data'] = exam_data
-
-        return render_template(
-            'fibonacci_retracement.html',
-            chart_data=chart_data,
-            progress={'chart_count': exam_data['chart_count']},
-            symbol=coin.upper(),
-            timeframe=timeframe
-        )
-    return jsonify({'message': 'Fibonacci Retracement POST received'})
-
-@app.route('/charting_exam/fair_value_gaps', methods=['GET', 'POST'])
-def fair_value_gaps():
-    if 'exam_data' not in session:
-        session['exam_data'] = {
-            'chart_count': 1,
-            'scores': [],
-            'chart_data': None,
-            'coin': None,
-            'timeframe': None
-        }
-
-    exam_data = session['exam_data']
-
-    if request.method == 'GET':
-        chart_data, coin, timeframe = fetch_chart_data()
-        if not chart_data:
-            chart_data = [
-                {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
-                {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
-            ]
-        exam_data['chart_data'] = chart_data
-        exam_data['coin'] = coin
-        exam_data['timeframe'] = timeframe
-        session['exam_data'] = exam_data
-
-        return render_template(
-            'fair_value_gaps.html',
-            chart_data=chart_data,
-            progress={'chart_count': exam_data['chart_count']},
-            symbol=coin.upper(),
-            timeframe=timeframe
-        )
-    return jsonify({'message': 'Fair Value Gaps POST received'})
-
-@app.route('/charting_exam/orderblocks', methods=['GET', 'POST'])
-def orderblocks():
-    if 'exam_data' not in session:
-        session['exam_data'] = {
-            'chart_count': 1,
-            'scores': [],
-            'chart_data': None,
-            'coin': None,
-            'timeframe': None
-        }
-
-    exam_data = session['exam_data']
-
-    if request.method == 'GET':
-        chart_data, coin, timeframe = fetch_chart_data()
-        if not chart_data:
-            chart_data = [
-                {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
-                {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
-            ]
-        exam_data['chart_data'] = chart_data
-        exam_data['coin'] = coin
-        exam_data['timeframe'] = timeframe
-        session['exam_data'] = exam_data
-
-        return render_template(
-            'orderblocks.html',
-            chart_data=chart_data,
-            progress={'chart_count': exam_data['chart_count']},
-            symbol=coin.upper(),
-            timeframe=timeframe
-        )
-    return jsonify({'message': 'Orderblocks POST received'})
 
 if __name__ == '__main__':
     app.run(debug=True)

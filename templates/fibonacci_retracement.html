@@ -3,7 +3,7 @@
 {% block content %}
 <div class="container">
     <h2>Fibonacci Retracement</h2>
-    <p>Select two points on the chart to draw Fibonacci retracement levels. Draw at least one retracement to submit.</p>
+    <p id="instructions">Part 1: Draw an uptrend Fibonacci retracement (swing low to swing high).</p>
 
     <!-- Progress indicator -->
     <div class="exam-progress">
@@ -58,9 +58,11 @@
 <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
 <script>
     console.log("chartCount:", {{ progress.chart_count|default(1)|tojson|safe }});
+    console.log("fibonacciPart:", {{ progress.fibonacci_part|default(1)|tojson|safe }});
     console.log("chartData:", {{ chart_data|tojson|safe }});
 
     let chartCount = {{ progress.chart_count|default(1)|tojson|safe }} || 1;
+    let fibonacciPart = {{ progress.fibonacci_part|default(1)|tojson|safe }} || 1; // 1 = uptrend, 2 = downtrend
     const maxCharts = 5;
     let chartScores = [];
     let chartData = {{ chart_data|tojson|safe }};
@@ -77,10 +79,10 @@
         width: 800,
         height: 600,
         layout: { 
-            background: { color: '#1e1e1e' }, // Default dark mode
-            textColor: '#d1d4dc' // Light text
+            background: { color: '#1e1e1e' },
+            textColor: '#d1d4dc'
         },
-        grid: { // No grid lines
+        grid: { 
             vertLines: { visible: false },
             horzLines: { visible: false }
         },
@@ -100,9 +102,8 @@
     let priceLines = [];
     let correctPriceLines = [];
     let startPoint = null;
-    let isLightMode = false; // Default is dark mode
+    let isLightMode = false;
 
-    // Your preferred Fibonacci levels
     const fibLevels = [
         { level: 0, label: "0" },
         { level: 0.618, label: "0.618" },
@@ -125,7 +126,6 @@
 
     const correctColor = '#00FF00';
 
-    // Toggle to light mode
     document.getElementById('toggle-theme').addEventListener('click', () => {
         isLightMode = !isLightMode;
         chart.applyOptions({
@@ -136,6 +136,13 @@
         });
         document.getElementById('toggle-theme').textContent = isLightMode ? 'Toggle Dark Mode' : 'Toggle Light Mode';
     });
+
+    function updateInstructions() {
+        document.getElementById('instructions').textContent = 
+            fibonacciPart === 1 ? 
+            "Part 1: Draw an uptrend Fibonacci retracement (swing low to swing high)." :
+            "Part 2: Draw a downtrend Fibonacci retracement (swing high to swing low).";
+    }
 
     function updateFibonacciPanel() {
         const fibonacciList = document.getElementById('fibonacci-list');
@@ -233,13 +240,11 @@
             e.preventDefault();
             xOffset = e.clientX - currentX;
             yOffset = e.clientY - currentY;
-            
             const container = document.getElementById('chart-container');
             const maxX = container.offsetWidth - panel.offsetWidth;
             const maxY = container.offsetHeight - panel.offsetHeight;
             xOffset = Math.max(0, Math.min(xOffset, maxX));
             yOffset = Math.max(0, Math.min(yOffset, maxY));
-            
             panel.style.left = xOffset + 'px';
             panel.style.top = yOffset + 'px';
         }
@@ -291,190 +296,211 @@
     });
 
     document.getElementById('submit-btn').addEventListener('click', () => {
-        if (userFibonacci.length === 0) {
-            alert("Please draw at least one Fibonacci retracement before submitting.");
-            return;
+    if (userFibonacci.length === 0) {
+        alert("Please draw at least one Fibonacci retracement before submitting.");
+        return;
+    }
+
+    document.getElementById('loading-overlay').classList.add('active');
+    const loaderTimeout = setTimeout(() => {
+        document.getElementById('loading-overlay').classList.remove('active');
+    }, 5000);
+
+    fetch('/charting_exam/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+            examType: 'fibonacci_retracement',
+            drawings: userFibonacci,
+            chartCount: chartCount,
+            fibonacciPart: fibonacciPart
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        console.log('Server response:', data);
+        const correctStart = data.expected.start;
+        const correctEnd = data.expected.end;
+        drawCorrectFibonacciLevels(correctStart, correctEnd);
+
+        chartScores.push({
+            chart: chartCount,
+            part: fibonacciPart,
+            score: data.score,
+            total: data.totalExpectedPoints
+        });
+
+        let resultsHtml = `
+            <div class="results-summary">
+                <h4>Part ${fibonacciPart} Analysis <span class="analysis-score ${data.score > 0 ? 'good' : 'poor'}">${data.score}/${data.totalExpectedPoints}</span></h4>
+            </div>
+            <div class="score-statistics">
+                <div class="stat-row">
+                    <span class="stat-label">Total expected retracements:</span>
+                    <span class="stat-value neutral">${data.totalExpectedPoints}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Retracements you drew:</span>
+                    <span class="stat-value neutral">${userFibonacci.length}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Correctly identified:</span>
+                    <span class="stat-value ${data.score > 0 ? 'good' : 'poor'}">${data.score}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Incorrectly placed:</span>
+                    <span class="stat-value ${data.feedback && data.feedback.incorrect && data.feedback.incorrect.filter(f => f.type !== 'missed_retracement').length > 0 ? 'poor' : 'good'}">${data.feedback && data.feedback.incorrect ? data.feedback.incorrect.filter(f => f.type !== 'missed_retracement').length : 0}</span>
+                </div>
+                <div class="stat-row">
+                    <span class="stat-label">Missed retracements:</span>
+                    <span class="stat-value ${data.feedback && data.feedback.incorrect && data.feedback.incorrect.filter(f => f.type === 'missed_retracement').length > 0 ? 'poor' : 'good'}">${data.feedback && data.feedback.incorrect ? data.feedback.incorrect.filter(f => f.type === 'missed_retracement').length : 0}</span>
+                </div>
+            </div>
+            <div class="score-bar-container">
+                <div class="score-bar" style="width: ${data.totalExpectedPoints > 0 ? (data.score/data.totalExpectedPoints)*100 : 0}%"></div>
+            </div>
+        `;
+
+        if (data.feedback && data.feedback.correct && Array.isArray(data.feedback.correct) && data.feedback.correct.length > 0) {
+            resultsHtml += `
+                <div class="feedback-section correct-section">
+                    <h4>Correct Retracements</h4>
+                    <div class="feedback-grid">
+                        ${data.feedback.correct.map((fib, index) => {
+                            if (!fib || typeof fib !== 'object' || !fib.direction) {
+                                console.error(`Invalid feedback object at index ${index}:`, fib);
+                                return '<div class="feedback-card"><p class="feedback-advice">Error: Invalid retracement data</p></div>';
+                            }
+                            const direction = fib.direction || 'unknown';
+                            return `
+                                <div class="feedback-card">
+                                    <span class="feedback-type ${direction === 'uptrend' ? 'high' : 'low'}">${direction.toUpperCase()}</span>
+                                    <span class="feedback-price">From ${fib.startPrice ? fib.startPrice.toFixed(4) : 'N/A'} to ${fib.endPrice ? fib.endPrice.toFixed(4) : 'N/A'}</span>
+                                    <p class="feedback-advice">${fib.advice || 'No advice available'}</p>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `;
         }
 
-        document.getElementById('loading-overlay').classList.add('active');
-        const loaderTimeout = setTimeout(() => {
-            document.getElementById('loading-overlay').classList.remove('active');
-        }, 5000);
-
-        fetch('/charting_exam/validate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ 
-                examType: 'fibonacci_retracement',
-                drawings: userFibonacci,
-                chartCount: chartCount
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            console.log('Server response:', data);
-            const correctStart = data.expected.start;
-            const correctEnd = data.expected.end;
-            drawCorrectFibonacciLevels(correctStart, correctEnd);
-
-            chartScores.push({
-                chart: chartCount,
-                score: data.score,
-                total: data.totalExpectedPoints
-            });
-
-            let resultsHtml = `
-                <div class="results-summary">
-                    <h4>Your Analysis <span class="analysis-score ${data.score > 0 ? 'good' : 'poor'}">${data.score}/${data.totalExpectedPoints}</span></h4>
-                </div>
-                <div class="score-statistics">
-                    <div class="stat-row">
-                        <span class="stat-label">Total expected retracements:</span>
-                        <span class="stat-value neutral">${data.totalExpectedPoints}</span>
+        const incorrectFibs = data.feedback && data.feedback.incorrect ? data.feedback.incorrect.filter(f => f.type !== 'missed_retracement') : [];
+        if (incorrectFibs.length > 0) {
+            resultsHtml += `
+                <div class="feedback-section incorrect-section">
+                    <h4>Incorrect Retracements</h4>
+                    <div class="feedback-grid">
+                        ${incorrectFibs.map(fib => `
+                            <div class="feedback-card">
+                                <span class="feedback-type ${fib.direction === 'uptrend' ? 'high' : 'low'}">${(fib.direction || 'unknown').toUpperCase()}</span>
+                                <span class="feedback-price">From ${fib.startPrice ? fib.startPrice.toFixed(4) : 'N/A'} to ${fib.endPrice ? fib.endPrice.toFixed(4) : 'N/A'}</span>
+                                <p class="feedback-advice">${fib.advice || 'No advice available'}</p>
+                            </div>
+                        `).join('')}
                     </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Retracements you drew:</span>
-                        <span class="stat-value neutral">${userFibonacci.length}</span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Correctly identified:</span>
-                        <span class="stat-value ${data.score > 0 ? 'good' : 'poor'}">${data.score}</span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Incorrectly placed:</span>
-                        <span class="stat-value ${data.feedback.incorrect.filter(f => f.type !== 'missed_retracement').length > 0 ? 'poor' : 'good'}">${data.feedback.incorrect.filter(f => f.type !== 'missed_retracement').length}</span>
-                    </div>
-                    <div class="stat-row">
-                        <span class="stat-label">Missed retracements:</span>
-                        <span class="stat-value ${data.feedback.incorrect.filter(f => f.type === 'missed_retracement').length > 0 ? 'poor' : 'good'}">${data.feedback.incorrect.filter(f => f.type === 'missed_retracement').length}</span>
-                    </div>
-                </div>
-                <div class="score-bar-container">
-                    <div class="score-bar" style="width: ${data.totalExpectedPoints > 0 ? (data.score/data.totalExpectedPoints)*100 : 0}%"></div>
                 </div>
             `;
+        }
 
-            if (data.feedback.correct.length > 0) {
-                resultsHtml += `
-                    <div class="feedback-section correct-section">
-                        <h4>Correct Retracements</h4>
-                        <div class="feedback-grid">
-                            ${data.feedback.correct.map(fib => {
-                                const direction = fib.direction || 'unknown';
-                                return `
-                                    <div class="feedback-card">
-                                        <span class="feedback-type ${direction === 'uptrend' ? 'high' : 'low'}">${direction.toUpperCase()}</span>
-                                        <span class="feedback-price">From ${fib.startPrice.toFixed(4)} to ${fib.endPrice.toFixed(4)}</span>
-                                        <p class="feedback-advice">${fib.advice}</p>
-                                    </div>
-                                `;
-                            }).join('')}
-                        </div>
+        const missedFibs = data.feedback && data.feedback.incorrect ? data.feedback.incorrect.filter(f => f.type === 'missed_retracement') : [];
+        if (missedFibs.length > 0) {
+            resultsHtml += `
+                <div class="feedback-section missed-section">
+                    <h4>Missed Retracements</h4>
+                    <div class="feedback-grid">
+                        ${missedFibs.map(fib => `
+                            <div class="feedback-card">
+                                <span class="feedback-type missed">MISSED</span>
+                                <span class="feedback-price">From ${fib.startPrice ? fib.startPrice.toFixed(4) : 'N/A'} to ${fib.endPrice ? fib.endPrice.toFixed(4) : 'N/A'}</span>
+                                <p class="feedback-advice">${fib.advice || 'No advice available'}</p>
+                            </div>
+                        `).join('')}
                     </div>
-                `;
-            }
+                </div>
+            `;
+        }
 
-            const incorrectFibs = data.feedback.incorrect.filter(f => f.type !== 'missed_retracement');
-            if (incorrectFibs.length > 0) {
-                resultsHtml += `
-                    <div class="feedback-section incorrect-section">
-                        <h4>Incorrect Retracements</h4>
-                        <div class="feedback-grid">
-                            ${incorrectFibs.map(fib => `
-                                <div class="feedback-card">
-                                    <span class="feedback-type ${fib.direction === 'uptrend' ? 'high' : 'low'}">${fib.direction.toUpperCase()}</span>
-                                    <span class="feedback-price">From ${fib.startPrice.toFixed(4)} to ${fib.endPrice.toFixed(4)}</span>
-                                    <p class="feedback-advice">${fib.advice}</p>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `;
-            }
+        const resultsSection = document.getElementById('results-section');
+        const resultsContent = document.getElementById('results-content');
+        resultsContent.innerHTML = resultsHtml;
+        resultsSection.classList.add('active');
+        document.querySelector('.exam-container').classList.add('with-results');
 
-            const missedFibs = data.feedback.incorrect.filter(f => f.type === 'missed_retracement');
-            if (missedFibs.length > 0) {
-                resultsHtml += `
-                    <div class="feedback-section missed-section">
-                        <h4>Missed Retracements</h4>
-                        <div class="feedback-grid">
-                            ${missedFibs.map(fib => `
-                                <div class="feedback-card">
-                                    <span class="feedback-type missed">MISSED</span>
-                                    <span class="feedback-price">From ${fib.startPrice.toFixed(4)} to ${fib.endPrice.toFixed(4)}</span>
-                                    <p class="feedback-advice">${fib.advice}</p>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `;
-            }
-
-            const resultsSection = document.getElementById('results-section');
-            const resultsContent = document.getElementById('results-content');
-            resultsContent.innerHTML = resultsHtml;
-            resultsSection.classList.add('active');
-            document.querySelector('.exam-container').classList.add('with-results');
-
-            document.getElementById('continue-btn').onclick = function() {
-                removeCorrectFibonacciLevels();
-                chartCount++;
+        document.getElementById('continue-btn').onclick = function() {
+            removeCorrectFibonacciLevels();
+            if (data.next_part === 2) {
+                // Move to downtrend part on the same chart
+                fibonacciPart = 2;
+                updateInstructions();
+                userFibonacci = [];
+                priceLines.forEach(line => candleSeries.removePriceLine(line));
+                priceLines = [];
+                updateFibonacciPanel();
+            } else {
+                // Use the chartCount from the server response to ensure sync
+                chartCount = data.chart_count;
                 if (chartCount > maxCharts) {
+                    console.log("Exam finished, showing final results");
                     showFinalResults();
-                } else {
-                    fetch('/fetch_new_chart')
-                        .then(response => response.json())
-                        .then(data => {
-                            chartData = data.chart_data;
-                            candleSeries.setData(data.chart_data);
-                            document.getElementById('current-chart').textContent = chartCount;
-                            document.querySelector('.chart-progress').style.width = `${(chartCount / maxCharts) * 100}%`;
-                            document.getElementById('chart-symbol').textContent = `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
-                            userFibonacci = [];
-                            priceLines.forEach(line => candleSeries.removePriceLine(line));
-                            priceLines = [];
-                            updateFibonacciPanel();
-                            chart.timeScale().resetTimeScale();
-                            chart.timeScale().fitContent();
-                            if (chartCount === maxCharts) {
-                                document.getElementById('continue-btn').textContent = "Finish Exam";
-                            }
-                            resultsSection.classList.remove('active');
-                            document.querySelector('.exam-container').classList.remove('with-results');
-                            panel.style.left = '10px';
-                            panel.style.top = '10px';
-                            xOffset = 10;
-                            yOffset = 10;
-                        })
-                        .catch(error => {
-                            console.error('Error fetching new chart:', error);
-                            alert('Failed to load new chart. Please try again.');
-                        });
+                    return;
                 }
-            };
+                fetch('/fetch_new_chart')
+                    .then(response => response.json())
+                    .then(data => {
+                        chartData = data.chart_data;
+                        candleSeries.setData(data.chart_data);
+                        chartCount = data.chart_count; // Sync with server
+                        document.getElementById('current-chart').textContent = chartCount;
+                        document.querySelector('.chart-progress').style.width = `${(chartCount / maxCharts) * 100}%`;
+                        document.getElementById('chart-symbol').textContent = `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
+                        fibonacciPart = 1; // Reset to uptrend for new chart
+                        updateInstructions();
+                        userFibonacci = [];
+                        priceLines.forEach(line => candleSeries.removePriceLine(line));
+                        priceLines = [];
+                        updateFibonacciPanel();
+                        chart.timeScale().resetTimeScale();
+                        chart.timeScale().fitContent();
+                        if (chartCount === maxCharts) {
+                            document.getElementById('continue-btn').textContent = "Finish Exam";
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error fetching new chart:', error);
+                        alert('Failed to load new chart. Please try again.');
+                    });
+            }
+            resultsSection.classList.remove('active');
+            document.querySelector('.exam-container').classList.remove('with-results');
+            panel.style.left = '10px';
+            panel.style.top = '10px';
+            xOffset = 10;
+            yOffset = 10;
+        };
 
-            clearTimeout(loaderTimeout);
-            document.getElementById('loading-overlay').classList.remove('active');
-        })
-        .catch(error => {
-            console.error('Error submitting answer:', error);
-            document.getElementById('loading-overlay').classList.remove('active');
-            const resultsSection = document.getElementById('results-section');
-            const resultsContent = document.getElementById('results-content');
-            resultsContent.innerHTML = `
-                <div class="error-message">
-                    <h4>Error</h4>
-                    <p>Failed to submit answer: ${error.message}</p>
-                </div>
-            `;
-            resultsSection.classList.add('active');
-            document.querySelector('.exam-container').classList.add('with-results');
-        });
+        clearTimeout(loaderTimeout);
+        document.getElementById('loading-overlay').classList.remove('active');
+    })
+    .catch(error => {
+        console.error('Error submitting answer:', error);
+        document.getElementById('loading-overlay').classList.remove('active');
+        const resultsSection = document.getElementById('results-section');
+        const resultsContent = document.getElementById('results-content');
+        resultsContent.innerHTML = `
+            <div class="error-message">
+                <h4>Error</h4>
+                <p>Failed to submit answer: ${error.message}</p>
+            </div>
+        `;
+        resultsSection.classList.add('active');
+        document.querySelector('.exam-container').classList.add('with-results');
     });
+});
 
     function showFinalResults() {
         const totalScore = chartScores.reduce((sum, chart) => sum + chart.score, 0);
-        const totalPossible = chartScores.reduce((sum, chart) => sum + chart.total, 0);
+        const totalPossible = chartScores.reduce((sum, chart) => sum + chart.total, 0); // Sum of totalExpectedPoints
         const percentage = totalScore > 0 && totalPossible > 0 ? Math.round((totalScore / totalPossible) * 100) : 0;
 
         const resultsContent = document.getElementById('results-content');
@@ -482,7 +508,7 @@
             <div class="final-results">
                 <h4>Exam Complete!</h4>
                 <div class="final-score">
-                    <span class="final-score-value">${totalScore}/${totalPossible}</span>
+                    <span class="final-score-value">${totalScore.toFixed(1)}/${totalPossible}</span>
                     <span class="final-score-percentage">${percentage}%</span>
                 </div>
                 <div class="final-bar-container">
@@ -493,7 +519,7 @@
                     <ul class="chart-scores">
                         ${chartScores.map((chart, index) => `
                             <li class="chart-score-item">
-                                <span class="chart-number">Chart ${index + 1}</span>
+                                <span class="chart-number">Chart ${chart.chart}, Part ${chart.part}</span>
                                 <span class="chart-score">${chart.score}/${chart.total}</span>
                                 <div class="chart-mini-bar">
                                     <div class="chart-mini-progress" style="width: ${chart.total > 0 ? (chart.score/chart.total)*100 : 0}%"></div>
@@ -510,6 +536,7 @@
         document.getElementById('continue-btn').style.display = 'none';
     }
 
+    updateInstructions();
     updateFibonacciPanel();
 </script>
 
@@ -698,7 +725,7 @@
         margin-bottom: 5px;
     }
     .chart-number {
-        width: 80px;
+        width: 120px;
     }
     .chart-score {
         width: 60px;
