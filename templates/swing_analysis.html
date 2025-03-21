@@ -5,7 +5,7 @@
 {% block content %}
 <div class="container">
     <h2>Swing Analysis</h2>
-    <p>Mark swing highs and lows on the chart by clicking on the candlesticks.</p>
+    <p>Use the pointer tool to mark swing highs and lows on the chart by clicking on the candlestick wicks. Identify at least 2 swing highs and 2 swing lows.</p>
     
     <!-- Progress indicator -->
     <div class="exam-progress">
@@ -23,6 +23,7 @@
             
             <div class="toolbar mt-3">
                 <button id="mark-points" class="btn btn-primary">Mark Swing Points</button>
+                <button id="clear-markers" class="btn btn-secondary">Clear Markers</button>
                 <button id="submit-btn" class="btn btn-success">Submit Answer</button>
             </div>
         </div>
@@ -50,16 +51,32 @@
 
 <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
 <script>
-    let chartCount = {{ progress.chart_count|default(1) }};
+    console.log("chartCount:", {{ progress.chart_count|default(1)|tojson|safe }});
+    console.log("chartData:", {{ chart_data|tojson|safe }});
+
+    let chartCount = {{ progress.chart_count|default(1)|tojson|safe }} || 1;
     const maxCharts = 5;
     let chartScores = [];
-    const chartData = {{ chart_data|tojson|safe }};
+    let chartData = {{ chart_data|tojson|safe }};
+    
+    if (!Array.isArray(chartData) || chartData.length === 0) {
+        console.error("Invalid chart data, using fallback");
+        chartData = [
+            { time: 1710960000, open: 0.5, high: 0.51, low: 0.49, close: 0.505 },
+            { time: 1710963600, open: 0.505, high: 0.515, low: 0.5, close: 0.51 }
+        ];
+    }
 
     const chart = LightweightCharts.createChart(document.getElementById('chart'), {
         width: 800,
         height: 600,
         layout: { background: { color: '#ffffff' }, textColor: '#333333' },
-        timeScale: { timeVisible: true, secondsVisible: false }
+        timeScale: { timeVisible: true, secondsVisible: false },
+        crosshair: {
+            mode: LightweightCharts.CrosshairMode.Normal,
+            vertLine: { visible: true, labelVisible: true },
+            horzLine: { visible: true, labelVisible: true }
+        }
     });
     const candleSeries = chart.addCandlestickSeries();
     candleSeries.setData(chartData);
@@ -74,21 +91,61 @@
         console.log("Marking active:", markingActive);
     });
 
-    chart.subscribeClick((param) => {
-        if (markingActive && param.time) {
-            const price = param.seriesPrices.get(candleSeries);
-            if (price) {
-                const candle = chartData.find(c => c.time === param.time);
-                const pointType = Math.abs(price.close - candle.high) < Math.abs(price.close - candle.low) ? 'high' : 'low';
-                userPoints.push({ time: param.time, price: price.close, type: pointType });
-                candleSeries.setMarkers(userPoints.map(p => ({
-                    time: p.time,
-                    position: p.type === 'high' ? 'aboveBar' : 'belowBar',
-                    color: 'blue',
-                    shape: 'circle'
-                })));
-                console.log("User point added:", { time: param.time, price: price.close, type: pointType });
+    document.getElementById('clear-markers').addEventListener('click', () => {
+        userPoints = [];
+        candleSeries.setMarkers([]);
+        console.log("Markers cleared");
+    });
+
+    // Find the nearest candlestick based on time
+    function findNearestCandle(time) {
+        let nearestCandle = null;
+        let minDiff = Infinity;
+        chartData.forEach(candle => {
+            const diff = Math.abs(candle.time - time);
+            if (diff < minDiff) {
+                minDiff = diff;
+                nearestCandle = candle;
             }
+        });
+        return nearestCandle;
+    }
+
+    chart.subscribeClick((param) => {
+        if (!markingActive || !param.time || !param.point) {
+            return; // Ignore clicks outside of candlesticks or when marking is not active
+        }
+
+        const candle = findNearestCandle(param.time);
+        if (!candle) {
+            console.log("No candle found for time:", param.time);
+            return;
+        }
+
+        // Convert the y-coordinate of the click to a price
+        const clickedPrice = candleSeries.coordinateToPrice(param.point.y);
+        if (!clickedPrice) {
+            console.log("Unable to convert click coordinate to price");
+            return;
+        }
+
+        // Determine if the click is closer to the high or low wick
+        const pointType = Math.abs(clickedPrice - candle.high) < Math.abs(clickedPrice - candle.low) ? 'high' : 'low';
+        const priceToUse = pointType === 'high' ? candle.high : candle.low;
+
+        // Check for duplicates
+        const existingPoint = userPoints.find(p => p.time === candle.time && p.type === pointType);
+        if (!existingPoint) {
+            userPoints.push({ time: candle.time, price: priceToUse, type: pointType });
+            candleSeries.setMarkers(userPoints.map(p => ({
+                time: p.time,
+                position: p.type === 'high' ? 'aboveBar' : 'belowBar',
+                color: 'blue',
+                shape: 'circle'
+            })));
+            console.log("User point added:", { time: candle.time, price: priceToUse, type: pointType });
+        } else {
+            console.log("Point already marked at this time and type:", candle.time, pointType);
         }
     });
 
@@ -119,6 +176,11 @@
     }
 
     document.getElementById('submit-btn').addEventListener('click', () => {
+        if (userPoints.length === 0) {
+            alert("Please mark at least one swing point before submitting.");
+            return;
+        }
+
         document.getElementById('loading-overlay').classList.add('active');
         const loaderTimeout = setTimeout(() => {
             document.getElementById('loading-overlay').classList.remove('active');
@@ -199,7 +261,7 @@
                         <ul class="feedback-list">
                             ${data.feedback.incorrect.map(point => `
                                 <li>
-                                    <span class="point-type">${point.type === 'missed_point' ? point.type.toUpperCase() : point.type.toUpperCase()}</span>
+                                    <span class="point-type">${point.type === 'missed_point' ? 'MISSED' : point.type.toUpperCase()}</span>
                                     <span class="point-value">${point.price.toFixed(4)}</span>
                                     <span class="point-advice">${point.advice}</span>
                                 </li>
@@ -292,7 +354,7 @@
                     </ul>
                 </div>
                 <div class="final-actions">
-                    <a href="/charting_exam/swing_analysis" class="btn btn-primary">Restart Exam</a>
+                    <a href="/charting_exams" class="btn btn-primary">Return to Exams</a>
                 </div>
             </div>
         `;

@@ -56,28 +56,6 @@ def detect_swing_points(data, lookback=5):
             swing_points['lows'].append({'time': current['time'], 'price': current['low']})
     return swing_points
 
-def detect_fibonacci_levels(data):
-    swing_points = detect_swing_points(data)
-    highs = sorted(swing_points['highs'], key=lambda x: x['price'], reverse=True)[:1]
-    lows = sorted(swing_points['lows'], key=lambda x: x['price'])[:1]
-    
-    if not highs or not lows:
-        return {'high': None, 'low': None, 'levels': []}
-    
-    high = highs[0]
-    low = lows[0]
-    high_price = high['price']
-    low_price = low['price']
-    range = high_price - low_price
-    
-    fib_levels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1]
-    levels = [
-        {'level': level, 'price': high_price - (range * level)}
-        for level in fib_levels
-    ]
-    
-    return {'high': high, 'low': low, 'levels': levels}
-
 @app.route('/charting_exams')
 def charting_exams():
     return render_template('index.html')
@@ -144,7 +122,7 @@ def fetch_new_chart():
 def validate_drawing():
     data = request.get_json()
     exam_type = data.get('examType')
-    drawings = data.get('drawings', {})
+    drawings = data.get('drawings', [])
     chart_count = data.get('chartCount')
 
     exam_data = session.get('exam_data', {})
@@ -152,9 +130,9 @@ def validate_drawing():
     interval = exam_data.get('timeframe', '4h')
 
     if exam_type == 'swing_analysis':
-        validation_result = validate_swing_points(drawings, chart_data, interval)
-    elif exam_type == 'fibonacci_retracement':
-        validation_result = validate_fibonacci(drawings, chart_data, interval)
+        # Define lookback here and pass it to validate_swing_points
+        lookback = 5  # Match the default value used in detect_swing_points
+        validation_result = validate_swing_points(drawings, chart_data, interval, lookback)
     else:
         return jsonify({'success': False, 'message': 'Exam type not implemented yet'})
 
@@ -172,21 +150,31 @@ def validate_drawing():
         'expected': validation_result['expected']
     })
 
-def validate_swing_points(drawings, chart_data, interval):
+def validate_swing_points(drawings, chart_data, interval, lookback):
     if not chart_data or len(chart_data) < 10:
         return {
             'success': False,
             'message': 'Insufficient chart data for validation.',
             'score': 0,
-            'feedback': {'correct': [], 'incorrect': [{'advice': 'No chart data available.'}]},
+            'feedback': {'correct': [], 'incorrect': [{'advice': 'No chart data available. Please try again with a different chart.'}]},
             'expected': {'highs': [], 'lows': []},
             'totalExpectedPoints': 4
         }
 
-    swing_points = detect_swing_points(chart_data)
+    swing_points = detect_swing_points(chart_data, lookback)
     highs = sorted(swing_points['highs'], key=lambda x: x['price'], reverse=True)[:2]
     lows = sorted(swing_points['lows'], key=lambda x: x['price'])[:2]
     expected = {'highs': highs, 'lows': lows}
+
+    if len(highs) < 2 or len(lows) < 2:
+        return {
+            'success': False,
+            'message': 'Not enough swing points detected in this chart.',
+            'score': 0,
+            'feedback': {'correct': [], 'incorrect': [{'advice': 'This chart does not have enough clear swing points. Try another chart.'}]},
+            'expected': expected,
+            'totalExpectedPoints': 4
+        }
 
     price_range = max(c['high'] for c in chart_data) - min(c['low'] for c in chart_data) if chart_data else 1
     tolerance_map = {'1h': 0.005, '4h': 0.015, '1d': 0.025}
@@ -213,7 +201,7 @@ def validate_swing_points(drawings, chart_data, interval):
                     'type': point_type,
                     'time': point['time'],
                     'price': point['price'],
-                    'advice': f"Good job! You identified a swing {point_type} at price {point['price']:.2f}."
+                    'advice': f"Good job! You identified a swing {point_type} at price {point['price']:.2f}. This is a significant {point_type} point because it’s higher/lower than the surrounding {lookback} candles on both sides."
                 })
                 break
         if not point_matched:
@@ -221,7 +209,7 @@ def validate_swing_points(drawings, chart_data, interval):
                 'type': d['type'],
                 'time': d['time'],
                 'price': d['price'],
-                'advice': f"This point at price {d['price']:.2f} doesn’t match a significant swing point."
+                'advice': f"This point at price {d['price']:.2f} doesn’t match a significant swing point. A swing {d['type']} should be higher/lower than the surrounding {lookback} candles on both sides."
             })
 
     for i, point in enumerate(highs + lows):
@@ -231,128 +219,16 @@ def validate_swing_points(drawings, chart_data, interval):
                 'type': 'missed_point',
                 'time': point['time'],
                 'price': point['price'],
-                'advice': f"You missed a swing {point_type} at price {point['price']:.2f}."
+                'advice': f"You missed a swing {point_type} at price {point['price']:.2f}. This is a significant {point_type} because it’s higher/lower than the surrounding {lookback} candles on both sides."
             })
 
     total_expected = len(highs) + len(lows)
-    success = matched >= total_expected
-    score = matched if total_expected == 0 else matched / total_expected
-
-    return {
-        'success': success,
-        'message': 'Swing points identified correctly!' if success else 'Some swing points were missed or incorrect.',
-        'score': score,
-        'feedback': feedback,
-        'totalExpectedPoints': total_expected,
-        'expected': expected
-    }
-
-def validate_fibonacci(drawings, chart_data, interval):
-    if not chart_data or len(chart_data) < 10:
-        return {
-            'success': False,
-            'message': 'Insufficient chart data for validation.',
-            'score': 0,
-            'feedback': {'correct': [], 'incorrect': []},
-            'expected': {'levels': []},
-            'totalExpectedPoints': 5
-        }
-
-    expected = detect_fibonacci_levels(chart_data)
-    if not expected['high'] or not expected['low']:
-        return {
-            'success': False,
-            'message': 'Could not detect swing points for Fibonacci validation.',
-            'score': 0,
-            'feedback': {'correct': [], 'incorrect': [{'advice': 'No swing points detected.'}]},
-            'expected': {'levels': []},
-            'totalExpectedPoints': 5
-        }
-
-    user_high = drawings.get('swingHigh')
-    user_low = drawings.get('swingLow')
-    if not user_high or not user_low:
-        return {
-            'success': False,
-            'message': 'Please select both a swing high and low.',
-            'score': 0,
-            'feedback': {'correct': [], 'incorrect': [{'advice': 'Missing swing high or low.'}]},
-            'expected': expected,
-            'totalExpectedPoints': 5
-        }
-
-    # Validate swing high and low selection
-    price_range = max(c['high'] for c in chart_data) - min(c['low'] for c in chart_data)
-    tolerance_map = {'1h': 0.005, '4h': 0.015, '1d': 0.025}
-    price_tolerance = price_range * tolerance_map.get(interval, 0.02)
-    time_increment = {'1h': 3600, '4h': 14400, '1d': 86400}.get(interval, 14400)
-    time_tolerance = time_increment * 3
-
-    high_correct = (abs(user_high['time'] - expected['high']['time']) < time_tolerance and
-                    abs(user_high['price'] - expected['high']['price']) < price_tolerance)
-    low_correct = (abs(user_low['time'] - expected['low']['time']) < time_tolerance and
-                   abs(user_low['price'] - expected['low']['price']) < price_tolerance)
-
-    if not high_correct or not low_correct:
-        feedback = {'correct': [], 'incorrect': []}
-        if not high_correct:
-            feedback['incorrect'].append({
-                'type': 'swing_high',
-                'time': user_high['time'],
-                'price': user_high['price'],
-                'advice': f"Expected swing high at price {expected['high']['price']:.2f}, but you selected {user_high['price']:.2f}."
-            })
-        if not low_correct:
-            feedback['incorrect'].append({
-                'type': 'swing_low',
-                'time': user_low['time'],
-                'price': user_low['price'],
-                'advice': f"Expected swing low at price {expected['low']['price']:.2f}, but you selected {user_low['price']:.2f}."
-            })
-        return {
-            'success': False,
-            'message': 'Incorrect swing high or low selected.',
-            'score': 0,
-            'feedback': feedback,
-            'totalExpectedPoints': 5,
-            'expected': expected
-        }
-
-    # Calculate user Fibonacci levels
-    high_price = max(user_high['price'], user_low['price'])
-    low_price = min(user_high['price'], user_low['price'])
-    range = high_price - low_price
-    fib_levels = [0.236, 0.382, 0.5, 0.618, 0.786]
-    user_levels = [
-        {'level': level, 'price': high_price - (range * level)}
-        for level in fib_levels
-    ]
-
-    # Compare user levels to expected levels
-    matched = 0
-    feedback = {'correct': [], 'incorrect': []}
-    for user_level, expected_level in zip(user_levels, expected['levels'][1:-1]):  # Skip 0% and 100%
-        if abs(user_level['price'] - expected_level['price']) < price_tolerance:
-            matched += 1
-            feedback['correct'].append({
-                'level': user_level['level'],
-                'price': user_level['price'],
-                'advice': f"Good job! The {(user_level['level'] * 100)}% level at {user_level['price']:.2f} is correct."
-            })
-        else:
-            feedback['incorrect'].append({
-                'level': user_level['level'],
-                'price': user_level['price'],
-                'advice': f"The {(user_level['level'] * 100)}% level should be at {expected_level['price']:.2f}, but you placed it at {user_level['price']:.2f}."
-            })
-
-    total_expected = len(fib_levels)
     success = matched >= total_expected
     score = matched
 
     return {
         'success': success,
-        'message': 'Fibonacci levels identified correctly!' if success else 'Some Fibonacci levels were incorrect.',
+        'message': 'Swing points identified correctly!' if success else 'Some swing points were missed or incorrect.',
         'score': score,
         'feedback': feedback,
         'totalExpectedPoints': total_expected,
