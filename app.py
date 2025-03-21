@@ -10,35 +10,61 @@ app.secret_key = 'your-secret-key-here'
 logging.basicConfig(level=logging.DEBUG)
 
 def fetch_chart_data(coin=None, timeframe=None, limit=50):
-    coins = [
+    # Define available coins
+    all_coins = [
         'bitcoin', 'ethereum', 'binancecoin', 'solana', 
         'cosmos', 'ripple', 'litecoin', 'chainlink'
     ]
+    # Define which coins can appear in 1h timeframe
+    hourly_coins = ['bitcoin', 'ethereum', 'binancecoin', 'solana']
     timeframes = {'1h': 1, '4h': 7, '1d': 30}
     
-    coin = coin or random.choice(coins)
+    # First select timeframe if not provided
     timeframe = timeframe or random.choice(list(timeframes.keys()))
+    
+    # Then select coin based on timeframe restrictions
+    if coin is None:
+        if timeframe == '1h':
+            # If 1h timeframe, only select from hourly_coins
+            coin = random.choice(hourly_coins)
+        else:
+            # For other timeframes, select from all coins
+            coin = random.choice(all_coins)
     
     days = timeframes[timeframe]
     url = f'https://api.coingecko.com/api/v3/coins/{coin}/ohlc?vs_currency=usd&days={days}'
     headers = {"x-cg-demo-api-key": "CG-X9rKSiVeFyMS6FPbUCaFw4Lc"}
     print(f"Fetching data for {coin} ({timeframe}) from {url} with days={days}")
+    logging.info(f"Selected coin: {coin} for timeframe: {timeframe}")
+    
     try:
         response = requests.get(url, headers=headers, timeout=5)
         print(f"API Response Status: {response.status_code}")
         if response.status_code != 200:
             print(f"API Error: {response.status_code} - {response.text}")
-            return [], coin, timeframe
+            dummy_data = [
+                {'time': 1710960000, 'open': 0.5, 'high': 0.51, 'low': 0.49, 'close': 0.505},
+                {'time': 1710963600, 'open': 0.505, 'high': 0.515, 'low': 0.5, 'close': 0.51}
+            ]
+            return dummy_data, coin, timeframe
+        
         data = response.json()
         print(f"Received {len(data)} candles from CoinGecko")
         candles_to_take = min(limit, len(data))
-        chart_data = [
-            {'time': int(row[0] / 1000), 'open': float(row[1]), 'high': float(row[2]), 
-             'low': float(row[3]), 'close': float(row[4])}
-            for row in data[-candles_to_take:]
-        ]
+        chart_data = []
+        
+        for row in data[-candles_to_take:]:
+            chart_data.append({
+                'time': int(row[0] / 1000), 
+                'open': float(row[1]), 
+                'high': float(row[2]), 
+                'low': float(row[3]), 
+                'close': float(row[4])
+            })
+        
         print(f"Fetched {len(chart_data)} candles for {coin} ({timeframe})")
         return chart_data, coin, timeframe
+        
     except Exception as e:
         print(f"Exception fetching data: {e}")
         dummy_data = [
@@ -487,7 +513,7 @@ def validate_fibonacci_retracement(drawings, chart_data, interval, part):
             'message': f"No significant {'uptrend' if part == 1 else 'downtrend'} retracement found.",
             'score': 0,
             'feedback': {'correct': [], 'incorrect': [{'advice': f"Couldn’t find a clear {'uptrend' if part == 1 else 'downtrend'} retracement. Try another chart."}]},
-            'totalExpectedPoints': 1,
+            'totalExpectedPoints': 2,  # Still expect 2 credits even if no retracement is found
             'expected': expected_retracement
         }
 
@@ -498,50 +524,12 @@ def validate_fibonacci_retracement(drawings, chart_data, interval, part):
     time_increment = {'1h': 3600, '4h': 14400, '1d': 86400}.get(interval, 14400)
     time_tolerance = time_increment * 3
 
-    matched = 0
+    total_credits = 2  # 1 for start, 1 for end
+    credits_earned = 0
     feedback = {'correct': [], 'incorrect': []}
 
     # Validate user drawings
-    for fib in drawings:
-        start_matched = (abs(fib['start']['time'] - expected_retracement['start']['time']) < time_tolerance and
-                         abs(fib['start']['price'] - expected_retracement['start']['price']) < price_tolerance)
-        end_matched = (abs(fib['end']['time'] - expected_retracement['end']['time']) < time_tolerance and
-                       abs(fib['end']['price'] - expected_retracement['end']['price']) < price_tolerance)
-        user_direction = 'uptrend' if fib['end']['price'] > fib['start']['price'] else 'downtrend'
-        direction_matched = user_direction == expected_retracement['direction']
-
-        if start_matched and end_matched and direction_matched:
-            matched += 1
-            feedback['correct'].append({
-                'direction': user_direction,
-                'startPrice': fib['start']['price'],
-                'endPrice': fib['end']['price'],
-                'advice': f"Spot on! You nailed the {user_direction} retracement from {fib['start']['price']:.2f} to {fib['end']['price']:.2f}."
-            })
-        else:
-            start_close = (abs(fib['start']['time'] - expected_retracement['start']['time']) < time_tolerance * 2 and
-                           abs(fib['start']['price'] - expected_retracement['start']['price']) < price_tolerance * 2)
-            end_close = (abs(fib['end']['time'] - expected_retracement['end']['time']) < time_tolerance * 2 and
-                         abs(fib['end']['price'] - expected_retracement['end']['price']) < price_tolerance * 2)
-            if start_close and end_close and direction_matched:
-                matched += 0.7  # Partial credit
-                feedback['incorrect'].append({
-                    'type': 'close_retracement',
-                    'direction': user_direction,
-                    'startPrice': fib['start']['price'],
-                    'endPrice': fib['end']['price'],
-                    'advice': f"Close call! Your {user_direction} from {fib['start']['price']:.2f} to {fib['end']['price']:.2f} is near the mark—adjust slightly."
-                })
-            else:
-                feedback['incorrect'].append({
-                    'type': 'incorrect_retracement',
-                    'direction': user_direction,
-                    'startPrice': fib['start']['price'],
-                    'endPrice': fib['end']['price'],
-                    'advice': f"This {user_direction} from {fib['start']['price']:.2f} to {fib['end']['price']:.2f} doesn’t match the expected retracement."
-                })
-
-    if matched == 0:
+    if not drawings:
         feedback['incorrect'].append({
             'type': 'missed_retracement',
             'direction': expected_retracement['direction'],
@@ -549,17 +537,67 @@ def validate_fibonacci_retracement(drawings, chart_data, interval, part):
             'endPrice': expected_retracement['end']['price'],
             'advice': f"You missed the {expected_retracement['direction']} retracement from {expected_retracement['start']['price']:.2f} to {expected_retracement['end']['price']:.2f}."
         })
+    else:
+        for fib in drawings:
+            user_direction = 'uptrend' if fib['end']['price'] > fib['start']['price'] else 'downtrend'
+            direction_matched = user_direction == expected_retracement['direction']
 
-    total_expected = 1
-    success = matched >= 1
-    score = min(matched, 1.0)  # Cap at 1.0 per part
+            if not direction_matched:
+                feedback['incorrect'].append({
+                    'type': 'incorrect_direction',
+                    'direction': user_direction,
+                    'startPrice': fib['start']['price'],
+                    'endPrice': fib['end']['price'],
+                    'advice': f"Direction incorrect: Expected {expected_retracement['direction']}, but you drew a {user_direction} from {fib['start']['price']:.2f} to {fib['end']['price']:.2f}."
+                })
+                continue  # No credits if direction is wrong
+
+            # Check start price
+            start_exact = (abs(fib['start']['time'] - expected_retracement['start']['time']) < time_tolerance and
+                           abs(fib['start']['price'] - expected_retracement['start']['price']) < price_tolerance)
+            start_close = (abs(fib['start']['time'] - expected_retracement['start']['time']) < time_tolerance * 2 and
+                           abs(fib['start']['price'] - expected_retracement['start']['price']) < price_tolerance * 2)
+            
+            start_credits = 1 if start_exact else 0.5 if start_close else 0
+            credits_earned += start_credits
+
+            # Check end price
+            end_exact = (abs(fib['end']['time'] - expected_retracement['end']['time']) < time_tolerance and
+                         abs(fib['end']['price'] - expected_retracement['end']['price']) < price_tolerance)
+            end_close = (abs(fib['end']['time'] - expected_retracement['end']['time']) < time_tolerance * 2 and
+                         abs(fib['end']['price'] - expected_retracement['end']['price']) < price_tolerance * 2)
+            
+            end_credits = 1 if end_exact else 0.5 if end_close else 0
+            credits_earned += end_credits
+
+            # Provide feedback for this retracement
+            feedback['correct'].append({
+                'direction': user_direction,
+                'startPrice': fib['start']['price'],
+                'endPrice': fib['end']['price'],
+                'startCredits': start_credits,
+                'endCredits': end_credits,
+                'advice': f"Start Price: {start_credits}/1 credit ({'Exact' if start_exact else 'Close' if start_close else 'Incorrect'}), End Price: {end_credits}/1 credit ({'Exact' if end_exact else 'Close' if end_close else 'Incorrect'})"
+            })
+
+        if credits_earned == 0:
+            feedback['incorrect'].append({
+                'type': 'missed_retracement',
+                'direction': expected_retracement['direction'],
+                'startPrice': expected_retracement['start']['price'],
+                'endPrice': expected_retracement['end']['price'],
+                'advice': f"You missed the {expected_retracement['direction']} retracement from {expected_retracement['start']['price']:.2f} to {expected_retracement['end']['price']:.2f}."
+            })
+
+    success = credits_earned > 0
+    score = credits_earned
 
     return {
         'success': success,
-        'message': f"{'Uptrend' if part == 1 else 'Downtrend'} retracement {'correct' if success else 'needs work'}!",
+        'message': f"{'Uptrend' if part == 1 else 'Downtrend'} retracement: {score}/{total_credits} credits earned!",
         'score': score,
         'feedback': feedback,
-        'totalExpectedPoints': total_expected,
+        'totalExpectedPoints': total_credits,
         'expected': expected_retracement,
         'next_part': 2 if part == 1 else None  # Indicate next part or end of chart
     }
