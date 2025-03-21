@@ -1,0 +1,501 @@
+{% extends "base.html" %}
+
+{% block title %}Swing Analysis Exam{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h2>Swing Analysis</h2>
+    <p>Mark swing highs and lows on the chart by clicking on the candlesticks.</p>
+    
+    <!-- Progress indicator -->
+    <div class="exam-progress">
+        <span class="chart-indicator">Chart <span id="current-chart">{{ progress.chart_count|default(1) }}</span>/5</span>
+        <div class="chart-progress-bar">
+            <div class="chart-progress" style="width: {{ (progress.chart_count|default(1) / 5) * 100 }}%"></div>
+        </div>
+    </div>
+    
+    <!-- Chart and results container -->
+    <div class="exam-container">
+        <div class="chart-section">
+            <h3 id="chart-symbol">Symbol: {{ symbol|default('Unknown') }} ({{ timeframe|default('Unknown') }})</h3>
+            <div id="chart" style="width: 800px; height: 600px;"></div>
+            
+            <div class="toolbar mt-3">
+                <button id="mark-points" class="btn btn-primary">Mark Swing Points</button>
+                <button id="submit-btn" class="btn btn-success">Submit Answer</button>
+            </div>
+        </div>
+        
+        <div id="results-section" class="results-section">
+            <div class="results-header">
+                <h3>Analysis Results</h3>
+            </div>
+            <div id="results-content" class="results-content">
+                <!-- Results will be inserted here -->
+            </div>
+            <div class="results-footer">
+                <button id="continue-btn" class="btn btn-success w-100">Continue</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="loading-overlay" class="loading-overlay">
+    <div class="loading-content">
+        <div class="spinner"></div>
+        <div class="loading-text">Analyzing your answers...</div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+    let chartCount = {{ progress.chart_count|default(1) }};
+    const maxCharts = 5;
+    let chartScores = [];
+    const chartData = {{ chart_data|tojson|safe }};
+
+    const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+        width: 800,
+        height: 600,
+        layout: { background: { color: '#ffffff' }, textColor: '#333333' },
+        timeScale: { timeVisible: true, secondsVisible: false }
+    });
+    const candleSeries = chart.addCandlestickSeries();
+    candleSeries.setData(chartData);
+    chart.timeScale().fitContent();
+
+    let markingActive = false;
+    let userPoints = [];
+
+    document.getElementById('mark-points').addEventListener('click', () => {
+        markingActive = !markingActive;
+        document.getElementById('mark-points').textContent = markingActive ? 'Stop Marking' : 'Mark Swing Points';
+        console.log("Marking active:", markingActive);
+    });
+
+    chart.subscribeClick((param) => {
+        if (markingActive && param.time) {
+            const price = param.seriesPrices.get(candleSeries);
+            if (price) {
+                const candle = chartData.find(c => c.time === param.time);
+                const pointType = Math.abs(price.close - candle.high) < Math.abs(price.close - candle.low) ? 'high' : 'low';
+                userPoints.push({ time: param.time, price: price.close, type: pointType });
+                candleSeries.setMarkers(userPoints.map(p => ({
+                    time: p.time,
+                    position: p.type === 'high' ? 'aboveBar' : 'belowBar',
+                    color: 'blue',
+                    shape: 'circle'
+                })));
+                console.log("User point added:", { time: param.time, price: price.close, type: pointType });
+            }
+        }
+    });
+
+    function overlaySwingPoints(expectedPoints) {
+        const allMarkers = userPoints.map(p => ({
+            time: p.time,
+            position: p.type === 'high' ? 'aboveBar' : 'belowBar',
+            color: 'blue',
+            shape: 'circle'
+        }));
+        expectedPoints.highs.forEach(point => {
+            allMarkers.push({
+                time: point.time,
+                position: 'aboveBar',
+                color: 'green',
+                shape: 'circle'
+            });
+        });
+        expectedPoints.lows.forEach(point => {
+            allMarkers.push({
+                time: point.time,
+                position: 'belowBar',
+                color: 'red',
+                shape: 'circle'
+            });
+        });
+        candleSeries.setMarkers(allMarkers);
+    }
+
+    document.getElementById('submit-btn').addEventListener('click', () => {
+        document.getElementById('loading-overlay').classList.add('active');
+        const loaderTimeout = setTimeout(() => {
+            document.getElementById('loading-overlay').classList.remove('active');
+        }, 5000);
+
+        fetch('/charting_exam/validate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                examType: 'swing_analysis',
+                drawings: userPoints,
+                chartCount: chartCount
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            chartCount = data.chart_count;
+            chartScores.push({
+                chart: chartCount,
+                score: data.score,
+                total: data.totalExpectedPoints
+            });
+
+            overlaySwingPoints(data.expected);
+
+            let resultsHtml = `
+                <div class="results-summary">
+                    <h4>Your Analysis <span class="analysis-score ${data.score > 0 ? 'good' : 'poor'}">${data.score}/${data.totalExpectedPoints}</span></h4>
+                </div>
+                <div class="score-statistics">
+                    <div class="stat-row">
+                        <span class="stat-label">Total swing points on chart:</span>
+                        <span class="stat-value neutral">${data.totalExpectedPoints}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Points you marked:</span>
+                        <span class="stat-value neutral">${userPoints.length}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Correctly identified:</span>
+                        <span class="stat-value ${data.score > 0 ? 'good' : 'poor'}">${data.score}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Incorrectly placed:</span>
+                        <span class="stat-value ${data.feedback.incorrect.length > 0 ? 'poor' : 'good'}">${data.feedback.incorrect.length}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Missed points:</span>
+                        <span class="stat-value ${data.feedback.incorrect.filter(f => f.type === 'missed_point').length > 0 ? 'poor' : 'good'}">${data.feedback.incorrect.filter(f => f.type === 'missed_point').length}</span>
+                    </div>
+                </div>
+                <div class="score-bar-container">
+                    <div class="score-bar" style="width: ${(data.score/data.totalExpectedPoints)*100}%"></div>
+                </div>
+            `;
+
+            if (data.feedback.correct.length > 0) {
+                resultsHtml += `
+                    <div class="feedback-section correct-section">
+                        <h4>Correct Points</h4>
+                        <ul class="feedback-list">
+                            ${data.feedback.correct.map(point => `
+                                <li>
+                                    <span class="point-type">${point.type.toUpperCase()}</span>
+                                    <span class="point-value">${point.price.toFixed(4)}</span>
+                                    <span class="point-advice">${point.advice}</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            if (data.feedback.incorrect.length > 0) {
+                resultsHtml += `
+                    <div class="feedback-section incorrect-section">
+                        <h4>Incorrect/Missed Points</h4>
+                        <ul class="feedback-list">
+                            ${data.feedback.incorrect.map(point => `
+                                <li>
+                                    <span class="point-type">${point.type === 'missed_point' ? point.type.toUpperCase() : point.type.toUpperCase()}</span>
+                                    <span class="point-value">${point.price.toFixed(4)}</span>
+                                    <span class="point-advice">${point.advice}</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            const resultsSection = document.getElementById('results-section');
+            const resultsContent = document.getElementById('results-content');
+            resultsContent.innerHTML = resultsHtml;
+            resultsSection.classList.add('active');
+            document.querySelector('.exam-container').classList.add('with-results');
+
+            document.getElementById('continue-btn').onclick = function() {
+                if (chartCount >= maxCharts) {
+                    showFinalResults();
+                } else {
+                    fetch('/fetch_new_chart')
+                        .then(response => response.json())
+                        .then(data => {
+                            candleSeries.setData(data.chart_data);
+                            chartCount = data.chart_count;
+                            document.getElementById('current-chart').textContent = chartCount;
+                            document.querySelector('.chart-progress').style.width = `${(chartCount / maxCharts) * 100}%`;
+                            document.getElementById('chart-symbol').textContent = `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
+                            userPoints = [];
+                            candleSeries.setMarkers([]);
+                            if (chartCount >= maxCharts) {
+                                document.getElementById('continue-btn').textContent = "Finish Exam";
+                            }
+                            resultsSection.classList.remove('active');
+                            document.querySelector('.exam-container').classList.remove('with-results');
+                        })
+                        .catch(error => {
+                            console.error('Error fetching new chart:', error);
+                            alert('Failed to load new chart. Please try again.');
+                        });
+                }
+            };
+
+            clearTimeout(loaderTimeout);
+            document.getElementById('loading-overlay').classList.remove('active');
+        })
+        .catch(error => {
+            console.error('Error submitting answer:', error);
+            document.getElementById('loading-overlay').classList.remove('active');
+            const resultsSection = document.getElementById('results-section');
+            const resultsContent = document.getElementById('results-content');
+            resultsContent.innerHTML = `
+                <div class="error-message">
+                    <h4>Error</h4>
+                    <p>Failed to submit answer: ${error.message}</p>
+                </div>
+            `;
+            resultsSection.classList.add('active');
+            document.querySelector('.exam-container').classList.add('with-results');
+        });
+    });
+
+    function showFinalResults() {
+        const totalScore = chartScores.reduce((sum, chart) => sum + chart.score, 0);
+        const totalPossible = chartScores.reduce((sum, chart) => sum + chart.total, 0);
+        const percentage = Math.round((totalScore / totalPossible) * 100);
+
+        const resultsContent = document.getElementById('results-content');
+        resultsContent.innerHTML = `
+            <div class="final-results">
+                <h4>Exam Complete!</h4>
+                <div class="final-score">
+                    <span class="final-score-value">${totalScore}/${totalPossible}</span>
+                    <span class="final-score-percentage">${percentage}%</span>
+                </div>
+                <div class="final-bar-container">
+                    <div class="final-bar" style="width: ${percentage}%"></div>
+                </div>
+                <div class="chart-breakdown">
+                    <h5>Chart by Chart Breakdown</h5>
+                    <ul class="chart-scores">
+                        ${chartScores.map((chart, index) => `
+                            <li class="chart-score-item">
+                                <span class="chart-number">Chart ${index + 1}</span>
+                                <span class="chart-score">${chart.score}/${chart.total}</span>
+                                <div class="chart-mini-bar">
+                                    <div class="chart-mini-progress" style="width: ${(chart.score/chart.total)*100}%"></div>
+                                </div>
+                            </li>
+                        `).join('')}
+                    </ul>
+                </div>
+                <div class="final-actions">
+                    <a href="/charting_exam/swing_analysis" class="btn btn-primary">Restart Exam</a>
+                </div>
+            </div>
+        `;
+        document.getElementById('continue-btn').style.display = 'none';
+    }
+</script>
+
+<style>
+    .exam-progress {
+        margin-bottom: 20px;
+    }
+    .chart-indicator {
+        font-size: 1.2rem;
+        margin-right: 10px;
+    }
+    .chart-progress-bar {
+        width: 100%;
+        height: 10px;
+        background: #ddd;
+        border-radius: 5px;
+        overflow: hidden;
+    }
+    .chart-progress {
+        height: 100%;
+        background: #4CAF50;
+        transition: width 0.3s ease;
+    }
+    .exam-container {
+        display: flex;
+        gap: 20px;
+    }
+    .chart-section {
+        flex: 1;
+    }
+    .results-section {
+        width: 300px;
+        background: #f5f5f5;
+        border-radius: 8px;
+        padding: 20px;
+        display: none;
+    }
+    .results-section.active {
+        display: block;
+    }
+    .exam-container.with-results .chart-section {
+        flex: 0 0 800px;
+    }
+    .results-header h3 {
+        margin-top: 0;
+    }
+    .results-content {
+        margin-bottom: 20px;
+    }
+    .results-summary h4 {
+        margin: 0 0 10px;
+    }
+    .analysis-score.good {
+        color: #4CAF50;
+    }
+    .analysis-score.poor {
+        color: #F44336;
+    }
+    .score-statistics .stat-row {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 5px;
+    }
+    .stat-label {
+        color: #666;
+    }
+    .stat-value.neutral {
+        color: #333;
+    }
+    .stat-value.good {
+        color: #4CAF50;
+    }
+    .stat-value.poor {
+        color: #F44336;
+    }
+    .score-bar-container {
+        width: 100%;
+        height: 10px;
+        background: #ddd;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    .score-bar {
+        height: 100%;
+        background: #4CAF50;
+        border-radius: 5px;
+    }
+    .feedback-section h4 {
+        margin: 10px 0 5px;
+    }
+    .feedback-list {
+        list-style: none;
+        padding: 0;
+    }
+    .feedback-list li {
+        margin-bottom: 5px;
+    }
+    .point-type {
+        font-weight: bold;
+        margin-right: 5px;
+    }
+    .point-value {
+        margin-right: 5px;
+    }
+    .point-advice {
+        color: #666;
+    }
+    .final-score {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 10px;
+    }
+    .final-score-value {
+        font-size: 1.5rem;
+        font-weight: bold;
+    }
+    .final-score-percentage {
+        font-size: 1.5rem;
+        color: #4CAF50;
+    }
+    .final-bar-container {
+        width: 100%;
+        height: 10px;
+        background: #ddd;
+        border-radius: 5px;
+        margin-bottom: 20px;
+    }
+    .final-bar {
+        height: 100%;
+        background: #4CAF50;
+        border-radius: 5px;
+    }
+    .chart-breakdown h5 {
+        margin: 10px 0;
+    }
+    .chart-scores {
+        list-style: none;
+        padding: 0;
+    }
+    .chart-score-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 5px;
+    }
+    .chart-number {
+        width: 80px;
+    }
+    .chart-score {
+        width: 60px;
+    }
+    .chart-mini-bar {
+        flex: 1;
+        height: 5px;
+        background: #ddd;
+        border-radius: 3px;
+    }
+    .chart-mini-progress {
+        height: 100%;
+        background: #4CAF50;
+        border-radius: 3px;
+    }
+    .final-actions {
+        margin-top: 20px;
+        display: flex;
+        gap: 10px;
+    }
+    .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+    }
+    .loading-overlay.active {
+        display: flex;
+    }
+    .loading-content {
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        text-align: center;
+    }
+    .spinner {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #4CAF50;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 10px;
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+</style>
+{% endblock %}

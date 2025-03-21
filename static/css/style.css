@@ -1,0 +1,23 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+}
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+#chart {
+    border: 1px solid #ccc;
+}
+.toolbar {
+    margin-top: 10px;
+}
+button {
+    padding: 5px 10px;
+    margin-right: 10px;
+}
+#results {
+    padding: 10px;
+    border: 1px solid #ddd;
+    background-color: #f9f9f9;
+}

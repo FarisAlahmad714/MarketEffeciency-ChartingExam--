@@ -1,0 +1,546 @@
+{% extends "base.html" %}
+
+{% block title %}Fibonacci Retracement Exam{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h2>Fibonacci Retracement</h2>
+    <p>Select a swing high and low on the chart to draw Fibonacci retracement levels.</p>
+    
+    <!-- Progress indicator -->
+    <div class="exam-progress">
+        <span class="chart-indicator">Chart <span id="current-chart">{{ progress.chart_count|default(1) }}</span>/5</span>
+        <div class="chart-progress-bar">
+            <div class="chart-progress" style="width: {{ (progress.chart_count|default(1) / 5) * 100 }}%"></div>
+        </div>
+    </div>
+    
+    <!-- Chart and results container -->
+    <div class="exam-container">
+        <div class="chart-section">
+            <h3 id="chart-symbol">Symbol: {{ symbol|default('Unknown') }} ({{ timeframe|default('Unknown') }})</h3>
+            <div id="chart" style="width: 800px; height: 600px;"></div>
+            
+            <div class="toolbar mt-3">
+                <button id="select-high" class="btn btn-primary">Select Swing High</button>
+                <button id="select-low" class="btn btn-primary">Select Swing Low</button>
+                <button id="submit-btn" class="btn btn-success">Submit Answer</button>
+            </div>
+        </div>
+        
+        <div id="results-section" class="results-section">
+            <div class="results-header">
+                <h3>Analysis Results</h3>
+            </div>
+            <div id="results-content" class="results-content">
+                <!-- Results will be inserted here -->
+            </div>
+            <div class="results-footer">
+                <button id="continue-btn" class="btn btn-success w-100">Continue</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div id="loading-overlay" class="loading-overlay">
+    <div class="loading-content">
+        <div class="spinner"></div>
+        <div class="loading-text">Analyzing your answers...</div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+    console.log("chartCount:", {{ progress.chart_count|default(1)|tojson|safe }});
+    console.log("chartData:", {{ chart_data|tojson|safe }});
+
+    let chartCount = {{ progress.chart_count|default(1)|tojson|safe }} || 1;
+    const maxCharts = 5;
+    let chartScores = [];
+    let chartData = {{ chart_data|tojson|safe }};
+    
+    if (!Array.isArray(chartData) || chartData.length === 0) {
+        console.error("Invalid chart data, using fallback");
+        chartData = [
+            { time: 1710960000, open: 0.5, high: 0.51, low: 0.49, close: 0.505 },
+            { time: 1710963600, open: 0.505, high: 0.515, low: 0.5, close: 0.51 }
+        ];
+    }
+
+    const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+        width: 800,
+        height: 600,
+        layout: { background: { color: '#ffffff' }, textColor: '#333333' },
+        timeScale: { timeVisible: true, secondsVisible: false }
+    });
+    const candleSeries = chart.addCandlestickSeries();
+    candleSeries.setData(chartData);
+    chart.timeScale().fitContent();
+
+    let selectingHigh = false;
+    let selectingLow = false;
+    let swingHigh = null;
+    let swingLow = null;
+    let fibLines = [];
+
+    document.getElementById('select-high').addEventListener('click', () => {
+        selectingHigh = !selectingHigh;
+        selectingLow = false;
+        document.getElementById('select-high').textContent = selectingHigh ? 'Cancel High' : 'Select Swing High';
+        document.getElementById('select-low').textContent = 'Select Swing Low';
+        console.log("Selecting high:", selectingHigh);
+    });
+
+    document.getElementById('select-low').addEventListener('click', () => {
+        selectingLow = !selectingLow;
+        selectingHigh = false;
+        document.getElementById('select-low').textContent = selectingLow ? 'Cancel Low' : 'Select Swing Low';
+        document.getElementById('select-high').textContent = 'Select Swing High';
+        console.log("Selecting low:", selectingLow);
+    });
+
+    chart.subscribeClick((param) => {
+        if ((selectingHigh || selectingLow) && param.time) {
+            const price = param.seriesPrices.get(candleSeries);
+            if (price) {
+                const candle = chartData.find(c => c.time === param.time);
+                if (selectingHigh) {
+                    swingHigh = { time: param.time, price: price.high };
+                    selectingHigh = false;
+                    document.getElementById('select-high').textContent = 'Select Swing High';
+                    candleSeries.setMarkers([{ time: param.time, position: 'aboveBar', color: 'blue', shape: 'circle' }]);
+                    console.log("Swing high selected:", swingHigh);
+                } else if (selectingLow) {
+                    swingLow = { time: param.time, price: price.low };
+                    selectingLow = false;
+                    document.getElementById('select-low').textContent = 'Select Swing Low';
+                    candleSeries.setMarkers([{ time: param.time, position: 'belowBar', color: 'blue', shape: 'circle' }]);
+                    console.log("Swing low selected:", swingLow);
+                }
+
+                // Draw Fibonacci levels if both high and low are selected
+                if (swingHigh && swingLow) {
+                    drawFibonacciLevels();
+                }
+            }
+        }
+    });
+
+    function drawFibonacciLevels() {
+        // Remove existing Fibonacci lines
+        fibLines.forEach(line => candleSeries.removePriceLine(line));
+        fibLines = [];
+
+        const highPrice = Math.max(swingHigh.price, swingLow.price);
+        const lowPrice = Math.min(swingHigh.price, swingLow.price);
+        const range = highPrice - lowPrice;
+
+        const fibLevels = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+        fibLevels.forEach(level => {
+            const price = highPrice - (range * level);
+            const line = candleSeries.createPriceLine({
+                price: price,
+                color: 'purple',
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: `${(level * 100).toFixed(1)}%`
+            });
+            fibLines.push(line);
+        });
+    }
+
+    function overlayExpectedFibonacci(expected) {
+        expected.levels.forEach(level => {
+            candleSeries.createPriceLine({
+                price: level.price,
+                color: 'green',
+                lineWidth: 1,
+                lineStyle: LightweightCharts.LineStyle.Dashed,
+                axisLabelVisible: true,
+                title: `${(level.level * 100).toFixed(1)}% (Expected)`
+            });
+        });
+    }
+
+    document.getElementById('submit-btn').addEventListener('click', () => {
+        if (!swingHigh || !swingLow) {
+            alert("Please select both a swing high and a swing low before submitting.");
+            return;
+        }
+
+        document.getElementById('loading-overlay').classList.add('active');
+        const loaderTimeout = setTimeout(() => {
+            document.getElementById('loading-overlay').classList.remove('active');
+        }, 5000);
+
+        fetch('/charting_exam/validate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                examType: 'fibonacci_retracement',
+                drawings: { swingHigh, swingLow },
+                chartCount: chartCount
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            chartCount = data.chart_count;
+            chartScores.push({
+                chart: chartCount,
+                score: data.score,
+                total: data.totalExpectedPoints
+            });
+
+            overlayExpectedFibonacci(data.expected);
+
+            let resultsHtml = `
+                <div class="results-summary">
+                    <h4>Your Analysis <span class="analysis-score ${data.score > 0 ? 'good' : 'poor'}">${data.score}/${data.totalExpectedPoints}</span></h4>
+                </div>
+                <div class="score-statistics">
+                    <div class="stat-row">
+                        <span class="stat-label">Total Fibonacci levels expected:</span>
+                        <span class="stat-value neutral">${data.totalExpectedPoints}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Correctly identified levels:</span>
+                        <span class="stat-value ${data.score > 0 ? 'good' : 'poor'}">${data.score}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Incorrect levels:</span>
+                        <span class="stat-value ${data.feedback.incorrect.length > 0 ? 'poor' : 'good'}">${data.feedback.incorrect.length}</span>
+                    </div>
+                </div>
+                <div class="score-bar-container">
+                    <div class="score-bar" style="width: ${(data.score/data.totalExpectedPoints)*100}%"></div>
+                </div>
+            `;
+
+            if (data.feedback.correct.length > 0) {
+                resultsHtml += `
+                    <div class="feedback-section correct-section">
+                        <h4>Correct Levels</h4>
+                        <ul class="feedback-list">
+                            ${data.feedback.correct.map(level => `
+                                <li>
+                                    <span class="point-type">${(level.level * 100).toFixed(1)}%</span>
+                                    <span class="point-value">${level.price.toFixed(4)}</span>
+                                    <span class="point-advice">${level.advice}</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            if (data.feedback.incorrect.length > 0) {
+                resultsHtml += `
+                    <div class="feedback-section incorrect-section">
+                        <h4>Incorrect Levels</h4>
+                        <ul class="feedback-list">
+                            ${data.feedback.incorrect.map(level => `
+                                <li>
+                                    <span class="point-type">${(level.level * 100).toFixed(1)}%</span>
+                                    <span class="point-value">${level.price.toFixed(4)}</span>
+                                    <span class="point-advice">${level.advice}</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+            }
+
+            const resultsSection = document.getElementById('results-section');
+            const resultsContent = document.getElementById('results-content');
+            resultsContent.innerHTML = resultsHtml;
+            resultsSection.classList.add('active');
+            document.querySelector('.exam-container').classList.add('with-results');
+
+            document.getElementById('continue-btn').onclick = function() {
+                if (chartCount >= maxCharts) {
+                    showFinalResults();
+                } else {
+                    fetch('/fetch_new_chart')
+                        .then(response => response.json())
+                        .then(data => {
+                            candleSeries.setData(data.chart_data);
+                            chartCount = data.chart_count;
+                            document.getElementById('current-chart').textContent = chartCount;
+                            document.querySelector('.chart-progress').style.width = `${(chartCount / maxCharts) * 100}%`;
+                            document.getElementById('chart-symbol').textContent = `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
+                            swingHigh = null;
+                            swingLow = null;
+                            fibLines.forEach(line => candleSeries.removePriceLine(line));
+                            fibLines = [];
+                            candleSeries.setMarkers([]);
+                            if (chartCount >= maxCharts) {
+                                document.getElementById('continue-btn').textContent = "Finish Exam";
+                            }
+                            resultsSection.classList.remove('active');
+                            document.querySelector('.exam-container').classList.remove('with-results');
+                        })
+                        .catch(error => {
+                            console.error('Error fetching new chart:', error);
+                            alert('Failed to load new chart. Please try again.');
+                        });
+                }
+            };
+
+            clearTimeout(loaderTimeout);
+            document.getElementById('loading-overlay').classList.remove('active');
+        })
+        .catch(error => {
+            console.error('Error submitting answer:', error);
+            document.getElementById('loading-overlay').classList.remove('active');
+            const resultsSection = document.getElementById('results-section');
+            const resultsContent = document.getElementById('results-content');
+            resultsContent.innerHTML = `
+                <div class="error-message">
+                    <h4>Error</h4>
+                    <p>Failed to submit answer: ${error.message}</p>
+                </div>
+            `;
+            resultsSection.classList.add('active');
+            document.querySelector('.exam-container').classList.add('with-results');
+        });
+    });
+
+    function showFinalResults() {
+        const totalScore = chartScores.reduce((sum, chart) => sum + chart.score, 0);
+        const totalPossible = chartScores.reduce((sum, chart) => sum + chart.total, 0);
+        const percentage = Math.round((totalScore / totalPossible) * 100);
+
+        const resultsContent = document.getElementById('results-content');
+        resultsContent.innerHTML = `
+            <div class="final-results">
+                <h4>Exam Complete!</h4>
+                <div class="final-score">
+                    <span class="final-score-value">${totalScore}/${totalPossible}</span>
+                    <span class="final-score-percentage">${percentage}%</span>
+                </div>
+                <div class="final-bar-container">
+                    <div class="final-bar" style="width: ${percentage}%"></div>
+                </div>
+                <div class="chart-breakdown">
+                    <h5>Chart by Chart Breakdown</h5>
+                    <ul class="chart-scores">
+                        ${chartScores.map((chart, index) => `
+                            <li class="chart-score-item">
+                                <span class="chart-number">Chart ${index + 1}</span>
+                                <span class="chart-score">${chart.score}/${chart.total}</span>
+                                <div class="chart-mini-bar">
+                                    <div class="chart-mini-progress" style="width: ${(chart.score/chart.total)*100}%"></div>
+                                </div>
+                            </li>
+                        `).join('')}
+                    </ul>
+                </div>
+                <div class="final-actions">
+                    <a href="/charting_exams" class="btn btn-primary">Return to Exams</a>
+                </div>
+            </div>
+        `;
+        document.getElementById('continue-btn').style.display = 'none';
+    }
+</script>
+
+<style>
+    .exam-progress {
+        margin-bottom: 20px;
+    }
+    .chart-indicator {
+        font-size: 1.2rem;
+        margin-right: 10px;
+    }
+    .chart-progress-bar {
+        width: 100%;
+        height: 10px;
+        background: #ddd;
+        border-radius: 5px;
+        overflow: hidden;
+    }
+    .chart-progress {
+        height: 100%;
+        background: #4CAF50;
+        transition: width 0.3s ease;
+    }
+    .exam-container {
+        display: flex;
+        gap: 20px;
+    }
+    .chart-section {
+        flex: 1;
+    }
+    .results-section {
+        width: 300px;
+        background: #f5f5f5;
+        border-radius: 8px;
+        padding: 20px;
+        display: none;
+    }
+    .results-section.active {
+        display: block;
+    }
+    .exam-container.with-results .chart-section {
+        flex: 0 0 800px;
+    }
+    .results-header h3 {
+        margin-top: 0;
+    }
+    .results-content {
+        margin-bottom: 20px;
+    }
+    .results-summary h4 {
+        margin: 0 0 10px;
+    }
+    .analysis-score.good {
+        color: #4CAF50;
+    }
+    .analysis-score.poor {
+        color: #F44336;
+    }
+    .score-statistics .stat-row {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 5px;
+    }
+    .stat-label {
+        color: #666;
+    }
+    .stat-value.neutral {
+        color: #333;
+    }
+    .stat-value.good {
+        color: #4CAF50;
+    }
+    .stat-value.poor {
+        color: #F44336;
+    }
+    .score-bar-container {
+        width: 100%;
+        height: 10px;
+        background: #ddd;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    .score-bar {
+        height: 100%;
+        background: #4CAF50;
+        border-radius: 5px;
+    }
+    .feedback-section h4 {
+        margin: 10px 0 5px;
+    }
+    .feedback-list {
+        list-style: none;
+        padding: 0;
+    }
+    .feedback-list li {
+        margin-bottom: 5px;
+    }
+    .point-type {
+        font-weight: bold;
+        margin-right: 5px;
+    }
+    .point-value {
+        margin-right: 5px;
+    }
+    .point-advice {
+        color: #666;
+    }
+    .final-score {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 10px;
+    }
+    .final-score-value {
+        font-size: 1.5rem;
+        font-weight: bold;
+    }
+    .final-score-percentage {
+        font-size: 1.5rem;
+        color: #4CAF50;
+    }
+    .final-bar-container {
+        width: 100%;
+        height: 10px;
+        background: #ddd;
+        border-radius: 5px;
+        margin-bottom: 20px;
+    }
+    .final-bar {
+        height: 100%;
+        background: #4CAF50;
+        border-radius: 5px;
+    }
+    .chart-breakdown h5 {
+        margin: 10px 0;
+    }
+    .chart-scores {
+        list-style: none;
+        padding: 0;
+    }
+    .chart-score-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 5px;
+    }
+    .chart-number {
+        width: 80px;
+    }
+    .chart-score {
+        width: 60px;
+    }
+    .chart-mini-bar {
+        flex: 1;
+        height: 5px;
+        background: #ddd;
+        border-radius: 3px;
+    }
+    .chart-mini-progress {
+        height: 100%;
+        background: #4CAF50;
+        border-radius: 3px;
+    }
+    .final-actions {
+        margin-top: 20px;
+        display: flex;
+        gap: 10px;
+    }
+    .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+    }
+    .loading-overlay.active {
+        display: flex;
+    }
+    .loading-content {
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        text-align: center;
+    }
+    .spinner {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #4CAF50;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 10px;
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+</style>
+{% endblock %}

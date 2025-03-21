@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ exam_type }} - Charting Exam</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script></head>
+<body>
+    <h1>{{ exam_type }}</h1>
+    <div class="container">
+        <p>Chart for {{ coin }} ({{ timeframe }})</p>
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>
