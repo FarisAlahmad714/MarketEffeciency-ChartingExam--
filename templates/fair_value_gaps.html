@@ -3,6 +3,1251 @@
 {% block content %}
 <div class="container">
     <h2>Fair Value Gaps</h2>
-    <p>Placeholder for Fair Value Gaps exam.</p>
+    <p id="instructions">Part 1: Identify Bullish Fair Value Gaps (gaps above price where price has yet to return).</p>
+
+    <!-- Progress indicator -->
+    <div class="exam-progress">
+        <span class="chart-indicator">Chart <span id="current-chart">{{ progress.chart_count|default(1) }}</span>/5</span>
+        <div class="chart-progress-bar">
+            <div class="chart-progress" style="width: {{ (progress.chart_count|default(1) / 5) * 100 }}%"></div>
+        </div>
+    </div>
+
+    <!-- Chart and results container -->
+    <div class="exam-container">
+        <div class="chart-section">
+            <h3 id="chart-symbol">Symbol: {{ symbol|default('Unknown') }} ({{ timeframe|default('Unknown') }})</h3>
+            <div id="chart-container" style="position: relative; width: 800px; height: 600px;">
+                <div id="chart" style="width: 100%; height: 100%;"></div>
+                <div id="fvg-panel" class="panel">
+                    <div class="panel-header">Fair Value Gaps</div>
+                    <div id="fvg-list" class="panel-content"></div>
+                </div>
+            </div>
+            
+            <div class="toolbar mt-3">
+                <button id="draw-rectangle" class="btn btn-primary">Draw FVG Rectangle</button>
+                <button id="draw-hline" class="btn btn-info">Draw H-Line</button>
+                <button id="undo-drawing" class="btn btn-warning">Undo</button>
+                <button id="clear-drawings" class="btn btn-secondary">Clear Drawings</button>
+                <button id="no-fvgs-button" class="btn btn-warning">No FVGs Found</button>
+                <button id="toggle-theme" class="btn btn-dark">Toggle Light Mode</button>
+                <button id="submit-btn" class="btn btn-success">Submit Answer</button>
+                <button id="reset-exam" class="btn btn-danger">Reset Exam</button>
+            </div>
+        </div>
+        
+        <div id="results-section" class="results-section">
+            <div class="results-header">
+                <h3>Analysis Results</h3>
+            </div>
+            <div id="results-content" class="results-content">
+                <!-- Results will be inserted here -->
+            </div>
+            <div class="results-footer">
+                <button id="continue-btn" class="btn btn-success w-100">Continue</button>
+            </div>
+        </div>
+    </div>
 </div>
+
+<div id="loading-overlay" class="loading-overlay">
+    <div class="loading-content">
+        <div class="spinner"></div>
+        <div class="loading-text">Analyzing your answers...</div>
+    </div>
+</div>
+
+<script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+    console.log("chartCount:", {{ progress.chart_count|default(1)|tojson|safe }});
+    console.log("fvgPart:", {{ progress.fvg_part|default(1)|tojson|safe }});
+    console.log("chartData:", {{ chart_data|tojson|safe }});
+
+    let chartCount = Math.min({{ progress.chart_count|default(1)|tojson|safe }} || 1, 5);
+    let fvgPart = {{ progress.fvg_part|default(1)|tojson|safe }} || 1; // 1 = bullish, 2 = bearish
+    const maxCharts = 5;
+    let chartScores = [];
+    let chartData = {{ chart_data|tojson|safe }};
+    let resultsData = null; // Store response data for reference
+    
+    if (!Array.isArray(chartData) || chartData.length === 0) {
+        console.error("Invalid chart data, using fallback");
+        chartData = [
+            { time: 1710960000, open: 0.5, high: 0.51, low: 0.49, close: 0.505 },
+            { time: 1710963600, open: 0.505, high: 0.515, low: 0.5, close: 0.51 }
+        ];
+    }
+
+    const chart = LightweightCharts.createChart(document.getElementById('chart'), {
+        width: 800,
+        height: 600,
+        layout: { 
+            background: { color: '#1e1e1e' },
+            textColor: '#d1d4dc'
+        },
+        grid: { 
+            vertLines: { visible: false },
+            horzLines: { visible: false }
+        },
+        timeScale: { timeVisible: true, secondsVisible: false },
+        crosshair: {
+            mode: LightweightCharts.CrosshairMode.Normal,
+            vertLine: { visible: true, labelVisible: true },
+            horzLine: { visible: true, labelVisible: true }
+        }
+    });
+    const candleSeries = chart.addCandlestickSeries();
+    candleSeries.setData(chartData);
+    chart.timeScale().fitContent();
+
+    let drawingMode = null; // 'rectangle', 'hline', or null
+    let userFVGs = [];
+    let markers = [];
+    let rectangles = [];
+    let hlines = [];
+    let startPoint = null;
+    let isLightMode = false;
+    
+    // FVG colors
+    const colors = {
+        bullish: 'rgba(76, 175, 80, 0.3)',
+        bearish: 'rgba(244, 67, 54, 0.3)',
+        correctBullish: 'rgba(255, 152, 0, 0.6)', // Changed to orange as requested
+        correctBearish: 'rgba(244, 67, 54, 0.6)'
+    };
+
+    document.getElementById('toggle-theme').addEventListener('click', () => {
+        isLightMode = !isLightMode;
+        chart.applyOptions({
+            layout: {
+                background: { color: isLightMode ? '#ffffff' : '#1e1e1e' },
+                textColor: isLightMode ? '#333333' : '#d1d4dc'
+            }
+        });
+        document.getElementById('toggle-theme').textContent = isLightMode ? 'Toggle Dark Mode' : 'Toggle Light Mode';
+    });
+
+    function updateInstructions() {
+        document.getElementById('instructions').textContent = 
+            fvgPart === 1 ? 
+            "Part 1: Identify Bullish Fair Value Gaps (gaps above price where price has yet to return)." :
+            "Part 2: Identify Bearish Fair Value Gaps (gaps below price where price has yet to return).";
+    }
+
+    function updateFVGPanel() {
+        const fvgList = document.getElementById('fvg-list');
+        if (userFVGs.length === 0) {
+            fvgList.innerHTML = '<p>No Fair Value Gaps marked yet.</p>';
+            return;
+        }
+        
+        // Check if "No FVGs Found" is marked
+        if (userFVGs.length === 1 && userFVGs[0].no_fvgs_found) {
+            fvgList.innerHTML = `
+                <div class="fvg-item special-item">
+                    <span class="fvg-label">No ${fvgPart === 1 ? 'Bullish' : 'Bearish'} FVGs Found</span>
+                    <span class="fvg-advice">You've indicated that there are no fair value gaps in this chart.</span>
+                </div>
+            `;
+            return;
+        }
+        
+        fvgList.innerHTML = userFVGs.map((fvg, index) => {
+            const startDate = new Date(fvg.startTime * 1000).toLocaleDateString();
+            return `
+                <div class="fvg-item">
+                    <span class="fvg-label">FVG ${index + 1} (${fvg.type})</span>
+                    <span class="fvg-range">Price Range: ${fvg.topPrice.toFixed(2)} - ${fvg.bottomPrice.toFixed(2)}</span>
+                    <span class="fvg-date">Date: ${startDate}</span>
+                </div>
+            `;
+        }).join('');
+    }
+
+    // Draw rectangle in the chart
+    function drawRectangle(startTime, endTime, topPrice, bottomPrice, type = 'bullish') {
+        const color = type === 'bullish' ? colors.bullish : colors.bearish;
+        
+        // Ensure startTime is less than endTime
+        const [actualStartTime, actualEndTime] = startTime < endTime ? [startTime, endTime] : [endTime, startTime];
+        
+        // Add markers to indicate the start and end of the FVG
+        const newMarkers = [
+            {
+                time: actualStartTime,
+                position: 'inBar',
+                color: color,
+                shape: 'square',
+                text: type === 'bullish' ? 'B-FVG Start' : 'S-FVG Start'
+            },
+            {
+                time: actualEndTime,
+                position: 'inBar',
+                color: color,
+                shape: 'square',
+                text: type === 'bullish' ? 'B-FVG End' : 'S-FVG End'
+            }
+        ];
+        
+        const existingMarkers = candleSeries.markers() || [];
+        candleSeries.setMarkers([...existingMarkers, ...newMarkers]);
+        
+        // Draw the top and bottom lines
+        const topLine = candleSeries.createPriceLine({
+            price: topPrice,
+            color: color,
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Solid,
+            axisLabelVisible: true,
+            title: `${type} FVG Top`
+        });
+        
+        const bottomLine = candleSeries.createPriceLine({
+            price: bottomPrice,
+            color: color,
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Solid,
+            axisLabelVisible: true,
+            title: `${type} FVG Bottom`
+        });
+        
+        rectangles.push({
+            startTime: actualStartTime,
+            endTime: actualEndTime,
+            topPrice: topPrice,
+            bottomPrice: bottomPrice,
+            type: type,
+            markers: newMarkers,
+            lines: [topLine, bottomLine]
+        });
+        
+        return rectangles[rectangles.length - 1];
+    }
+    
+    // Draw horizontal line in the chart
+    function drawHLine(time, price, type = 'bullish') {
+        const color = type === 'bullish' ? colors.bullish : colors.bearish;
+        const title = type === 'bullish' ? 'Bullish FVG' : 'Bearish FVG';
+        
+        // Create price line
+        const hline = candleSeries.createPriceLine({
+            price: price,
+            color: color,
+            lineWidth: 2,
+            lineStyle: LightweightCharts.LineStyle.Solid,
+            axisLabelVisible: true,
+            title: title
+        });
+        
+        // Add marker at the line position
+        const marker = {
+            time: time,
+            position: 'inBar',
+            color: color,
+            shape: 'circle',
+            text: type === 'bullish' ? 'B' : 'S'
+        };
+        
+        const existingMarkers = candleSeries.markers() || [];
+        candleSeries.setMarkers([...existingMarkers, marker]);
+        
+        // Store the line data
+        hlines.push({
+            line: hline,
+            time: time,
+            price: price,
+            type: type,
+            marker: marker
+        });
+        
+        return hlines[hlines.length - 1];
+    }
+
+    function removeLastDrawing() {
+        if (rectangles.length > 0) {
+            const lastRect = rectangles.pop();
+            
+            // Remove price lines
+            if (lastRect.lines) {
+                lastRect.lines.forEach(line => {
+                    candleSeries.removePriceLine(line);
+                });
+            }
+            
+            // Update markers
+            const currentMarkers = candleSeries.markers() || [];
+            const updatedMarkers = currentMarkers.filter(marker => {
+                return !lastRect.markers.some(m => 
+                    m.time === marker.time && 
+                    m.position === marker.position && 
+                    m.text === marker.text
+                );
+            });
+            
+            candleSeries.setMarkers(updatedMarkers);
+            return true;
+        } else if (hlines.length > 0) {
+            const lastLine = hlines.pop();
+            candleSeries.removePriceLine(lastLine.line);
+            
+            // Update markers
+            const currentMarkers = candleSeries.markers() || [];
+            const updatedMarkers = currentMarkers.filter(marker => {
+                return !(marker.time === lastLine.time && 
+                        marker.position === lastLine.marker.position && 
+                        marker.text === lastLine.marker.text);
+            });
+            
+            candleSeries.setMarkers(updatedMarkers);
+            return true;
+        }
+        return false;
+    }
+
+    function clearAllDrawings() {
+        // Clear rectangles
+        rectangles.forEach(rect => {
+            if (rect.lines) {
+                rect.lines.forEach(line => {
+                    candleSeries.removePriceLine(line);
+                });
+            }
+        });
+        rectangles = [];
+        
+        // Clear horizontal lines
+        hlines.forEach(line => {
+            candleSeries.removePriceLine(line.line);
+        });
+        hlines = [];
+        
+        // Clear all markers
+        candleSeries.setMarkers([]);
+        
+        // Clear user FVGs
+        userFVGs = [];
+        
+        // Reset the no FVGs state
+        resetNoFvgsState();
+        
+        // Update the FVG panel
+        updateFVGPanel();
+    }
+
+    const panel = document.getElementById('fvg-panel');
+    let isDragging = false;
+    let currentX;
+    let currentY;
+    let xOffset = 0;
+    let yOffset = 0;
+
+    panel.addEventListener('mousedown', startDragging);
+    document.addEventListener('mousemove', drag);
+    document.addEventListener('mouseup', stopDragging);
+
+    function startDragging(e) {
+        if (e.target.classList.contains('panel-header')) {
+            isDragging = true;
+            currentX = e.clientX - xOffset;
+            currentY = e.clientY - yOffset;
+        }
+    }
+
+    function drag(e) {
+        if (isDragging) {
+            e.preventDefault();
+            xOffset = e.clientX - currentX;
+            yOffset = e.clientY - currentY;
+            const container = document.getElementById('chart-container');
+            const maxX = container.offsetWidth - panel.offsetWidth;
+            const maxY = container.offsetHeight - panel.offsetHeight;
+            xOffset = Math.max(0, Math.min(xOffset, maxX));
+            yOffset = Math.max(0, Math.min(yOffset, maxY));
+            panel.style.left = xOffset + 'px';
+            panel.style.top = yOffset + 'px';
+        }
+    }
+
+    function stopDragging() {
+        isDragging = false;
+    }
+
+    // Find candle by time
+    function findCandleByTime(time) {
+        return chartData.find(candle => candle.time === time);
+    }
+
+    // Toggle drawing modes
+    document.getElementById('draw-rectangle').addEventListener('click', () => {
+        drawingMode = drawingMode === 'rectangle' ? null : 'rectangle';
+        document.getElementById('draw-rectangle').textContent = 
+            drawingMode === 'rectangle' ? 'Stop Drawing' : 'Draw FVG Rectangle';
+        
+        if (drawingMode === 'rectangle') {
+            document.getElementById('draw-hline').textContent = 'Draw H-Line';
+        }
+        
+        // Reset the "No FVGs Found" state
+        resetNoFvgsState();
+        
+        startPoint = null;
+    });
+
+    document.getElementById('draw-hline').addEventListener('click', () => {
+        drawingMode = drawingMode === 'hline' ? null : 'hline';
+        document.getElementById('draw-hline').textContent = 
+            drawingMode === 'hline' ? 'Stop Drawing' : 'Draw H-Line';
+        
+        if (drawingMode === 'hline') {
+            document.getElementById('draw-rectangle').textContent = 'Draw FVG Rectangle';
+        }
+        
+        // Reset the "No FVGs Found" state
+        resetNoFvgsState();
+        
+        startPoint = null;
+    });
+
+    document.getElementById('undo-drawing').addEventListener('click', () => {
+        if (removeLastDrawing()) {
+            if (userFVGs.length > 0) {
+                userFVGs.pop();
+                updateFVGPanel();
+            }
+        }
+        
+        // Reset the "No FVGs Found" state if no drawings remain
+        if (userFVGs.length === 0) {
+            resetNoFvgsState();
+        }
+    });
+
+    document.getElementById('clear-drawings').addEventListener('click', () => {
+        clearAllDrawings();
+    });
+
+    // Function to mark that no FVGs were found
+    function markNoFvgsFound() {
+        // Clear any existing drawings
+        clearAllDrawings();
+        
+        // Add a special FVG entry that indicates "No FVGs Found"
+        userFVGs = [{
+            no_fvgs_found: true,
+            type: fvgPart === 1 ? 'bullish' : 'bearish',
+            startTime: chartData[0].time,
+            endTime: chartData[chartData.length - 1].time,
+            topPrice: 0,
+            bottomPrice: 0
+        }];
+        
+        // Update the FVG panel
+        updateFVGPanel();
+        
+        // Visually indicate the choice
+        const chartContainer = document.getElementById('chart-container');
+        const noFvgOverlay = document.createElement('div');
+        noFvgOverlay.id = 'no-fvg-overlay';
+        noFvgOverlay.className = 'no-fvg-overlay';
+        noFvgOverlay.innerHTML = `<div class="no-fvg-message">No ${fvgPart === 1 ? 'Bullish' : 'Bearish'} FVGs Found</div>`;
+        
+        // Remove any existing overlay
+        const existingOverlay = document.getElementById('no-fvg-overlay');
+        if (existingOverlay) {
+            chartContainer.removeChild(existingOverlay);
+        }
+        
+        chartContainer.appendChild(noFvgOverlay);
+        
+        // Disable drawing buttons
+        document.getElementById('draw-rectangle').disabled = true;
+        document.getElementById('draw-hline').disabled = true;
+        document.getElementById('no-fvgs-button').disabled = true;
+    }
+
+    // Function to reset the "No FVGs Found" state
+    function resetNoFvgsState() {
+        // Re-enable drawing buttons
+        document.getElementById('draw-rectangle').disabled = false;
+        document.getElementById('draw-hline').disabled = false;
+        document.getElementById('no-fvgs-button').disabled = false;
+        
+        // Remove the overlay
+        const existingOverlay = document.getElementById('no-fvg-overlay');
+        if (existingOverlay) {
+            document.getElementById('chart-container').removeChild(existingOverlay);
+        }
+        
+        // Reset userFVGs if it was set to "No FVGs Found"
+        if (userFVGs.length === 1 && userFVGs[0].no_fvgs_found) {
+            userFVGs = [];
+            updateFVGPanel();
+        }
+    }
+
+    // Add event listener for the "No FVGs Found" button
+    document.getElementById('no-fvgs-button').addEventListener('click', markNoFvgsFound);
+    
+    document.getElementById('reset-exam').addEventListener('click', () => {
+        if (confirm('Are you sure you want to reset the exam? This will clear all your progress.')) {
+            // Force reset by clearing local data and redirecting through the exams page
+            chartCount = 1;
+            fvgPart = 1;
+            chartScores = [];
+            clearAllDrawings();
+            document.getElementById('current-chart').textContent = "1";
+            document.querySelector('.chart-progress').style.width = "20%";
+            
+            // Redirect through charting_exams to reset session
+            fetch('/charting_exams')
+                .then(() => window.location.href = '/charting_exam/fair_value_gaps');
+        }
+    });
+
+    chart.subscribeClick((param) => {
+        if (!drawingMode || !param.point) return;
+        
+        const price = candleSeries.coordinateToPrice(param.point.y);
+        const time = chart.timeScale().coordinateToTime(param.point.x);
+        
+        const nearestCandle = findCandleByTime(time);
+        
+        if (!nearestCandle) {
+            console.error('Could not find candle at time', time);
+            return;
+        }
+        
+        // Reset the "No FVGs Found" state if drawing
+        resetNoFvgsState();
+        
+        if (drawingMode === 'rectangle') {
+            if (!startPoint) {
+                startPoint = { time: nearestCandle.time, price };
+            } else {
+                const fvgType = fvgPart === 1 ? 'bullish' : 'bearish';
+                const topPrice = Math.max(startPoint.price, price);
+                const bottomPrice = Math.min(startPoint.price, price);
+                
+                drawRectangle(startPoint.time, nearestCandle.time, topPrice, bottomPrice, fvgType);
+                
+                userFVGs.push({
+                    startTime: startPoint.time,
+                    endTime: nearestCandle.time,
+                    topPrice: topPrice,
+                    bottomPrice: bottomPrice,
+                    type: fvgType
+                });
+                
+                updateFVGPanel();
+                startPoint = null;
+            }
+        } else if (drawingMode === 'hline') {
+            const fvgType = fvgPart === 1 ? 'bullish' : 'bearish';
+            drawHLine(nearestCandle.time, price, fvgType);
+            
+            userFVGs.push({
+                startTime: nearestCandle.time,
+                endTime: nearestCandle.time,
+                topPrice: price,
+                bottomPrice: price,
+                type: fvgType
+            });
+            
+            updateFVGPanel();
+        }
+    });
+
+    document.getElementById('submit-btn').addEventListener('click', () => {
+        if (userFVGs.length === 0) {
+            alert("Please mark at least one Fair Value Gap or use the 'No FVGs Found' button before submitting.");
+            return;
+        }
+
+        document.getElementById('loading-overlay').classList.add('active');
+        const loaderTimeout = setTimeout(() => {
+            document.getElementById('loading-overlay').classList.remove('active');
+        }, 5000);
+
+        fetch('/charting_exam/validate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                examType: 'fair_value_gaps',
+                drawings: userFVGs,
+                chartCount: chartCount,
+                fvgPart: fvgPart
+            })
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Server response:', data);
+            resultsData = data;  // Store response data for reference
+            
+            // Show correct FVGs on chart - changed to use orange for bullish FVGs
+            if (data.expected && Array.isArray(data.expected.gaps)) {
+                data.expected.gaps.forEach(gap => {
+                    // Use orange for bullish FVGs
+                    const color = gap.type === 'bullish' ? '#FF9800' : '#F44336';
+                    
+                    // Draw correct FVG as a pair of dashed lines
+                    const topLine = candleSeries.createPriceLine({
+                        price: gap.topPrice,
+                        color: color,
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: `Correct ${gap.type} FVG Top`
+                    });
+                    
+                    const bottomLine = candleSeries.createPriceLine({
+                        price: gap.bottomPrice,
+                        color: color,
+                        lineWidth: 2,
+                        lineStyle: LightweightCharts.LineStyle.Dashed,
+                        axisLabelVisible: true,
+                        title: `Correct ${gap.type} FVG Bottom`
+                    });
+                    
+                    // Add to markers list for later cleanup
+                    markers.push(topLine, bottomLine);
+                });
+            }
+
+            // Store the current chartCount at the time of submission
+            const currentChart = chartCount;
+            chartScores.push({
+                chart: currentChart,  // Use the chartCount at submission time
+                part: fvgPart,
+                score: data.score,
+                total: data.totalExpectedPoints
+            });
+
+            let resultsHtml = `
+                <div class="results-summary">
+                    <h4>Part ${fvgPart} Analysis <span class="analysis-score ${data.score > 0 ? 'good' : 'poor'}">${data.score}/${data.totalExpectedPoints}</span></h4>
+                </div>
+                <div class="score-statistics">
+                    <div class="stat-row">
+                        <span class="stat-label">Total gaps possible:</span>
+                        <span class="stat-value neutral">${data.totalExpectedPoints}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Gaps identified:</span>
+                        <span class="stat-value ${data.score > 0 ? 'good' : 'poor'}">${data.score}</span>
+                    </div>
+                    <div class="stat-row">
+                        <span class="stat-label">Markings you made:</span>
+                        <span class="stat-value neutral">${userFVGs.length}</span>
+                    </div>
+                </div>
+                <div class="score-bar-container">
+                    <div class="score-bar" style="width: ${data.totalExpectedPoints > 0 ? (data.score/data.totalExpectedPoints)*100 : 0}%"></div>
+                </div>
+            `;
+
+            if (data.feedback && data.feedback.correct && Array.isArray(data.feedback.correct) && data.feedback.correct.length > 0) {
+                resultsHtml += `
+                    <div class="feedback-section correct-section">
+                        <h4>Correctly Identified Gaps</h4>
+                        <div class="feedback-grid">
+                            ${data.feedback.correct.map((gap, index) => {
+                                return `
+                                    <div class="feedback-card">
+                                        <span class="feedback-type ${gap.type === 'bullish' ? 'bullish' : (gap.type === 'bearish' ? 'bearish' : 'neutral')}">${gap.type === 'no_gaps' ? 'CORRECT' : gap.type.toUpperCase()}</span>
+                                        <span class="feedback-price">${gap.type === 'no_gaps' ? '' : `Range: ${gap.topPrice ? gap.topPrice.toFixed(4) : 'N/A'} - ${gap.bottomPrice ? gap.bottomPrice.toFixed(4) : 'N/A'}`}</span>
+                                        <p class="feedback-advice">${gap.advice || 'Good job!'}</p>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            const incorrectGaps = data.feedback && data.feedback.incorrect ? data.feedback.incorrect.filter(g => g.type !== 'missed_gap') : [];
+            if (incorrectGaps.length > 0) {
+                resultsHtml += `
+                    <div class="feedback-section incorrect-section">
+                        <h4>Incorrect Markings</h4>
+                        <div class="feedback-grid">
+                            ${incorrectGaps.map(gap => `
+                                <div class="feedback-card">
+                                    <span class="feedback-type incorrect">INCORRECT</span>
+                                    <span class="feedback-price">${gap.type === 'no_gaps' || gap.type === 'missed_all_gaps' ? '' : `Range: ${gap.topPrice ? gap.topPrice.toFixed(4) : 'N/A'} - ${gap.bottomPrice ? gap.bottomPrice.toFixed(4) : 'N/A'}`}</span>
+                                    <p class="feedback-advice">${gap.advice || 'This is not a fair value gap based on the three-candle pattern definition.'}</p>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            const missedGaps = data.feedback && data.feedback.incorrect ? data.feedback.incorrect.filter(g => g.type === 'missed_gap') : [];
+            if (missedGaps.length > 0) {
+                resultsHtml += `
+                    <div class="feedback-section missed-section">
+                        <h4>Missed Gaps</h4>
+                        <div class="feedback-grid">
+                            ${missedGaps.map(gap => `
+                                <div class="feedback-card">
+                                    <span class="feedback-type missed">MISSED</span>
+                                    <span class="feedback-price">Range: ${gap.topPrice ? gap.topPrice.toFixed(4) : 'N/A'} - ${gap.bottomPrice ? gap.bottomPrice.toFixed(4) : 'N/A'}</span>
+                                    <p class="feedback-advice">${gap.advice || 'You missed this fair value gap.'}</p>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+
+            const resultsSection = document.getElementById('results-section');
+            const resultsContent = document.getElementById('results-content');
+            resultsContent.innerHTML = resultsHtml;
+            resultsSection.classList.add('active');
+            document.querySelector('.exam-container').classList.add('with-results');
+
+            clearTimeout(loaderTimeout);
+            document.getElementById('loading-overlay').classList.remove('active');
+        })
+        .catch(error => {
+            console.error('Error submitting answer:', error);
+            document.getElementById('loading-overlay').classList.remove('active');
+            const resultsSection = document.getElementById('results-section');
+            const resultsContent = document.getElementById('results-content');
+            resultsContent.innerHTML = `
+                <div class="error-message">
+                    <h4>Error</h4>
+                    <p>Failed to submit answer: ${error.message}</p>
+                    <p>Please try again or refresh the page.</p>
+                </div>
+            `;
+            resultsSection.classList.add('active');
+            document.querySelector('.exam-container').classList.add('with-results');
+        });
+    });
+
+    document.getElementById('continue-btn').addEventListener('click', function() {
+        // Clear markers showing correct FVGs
+        markers.forEach(line => {
+            candleSeries.removePriceLine(line);
+        });
+        markers = [];
+        
+        if (resultsData && resultsData.next_part === 2) {
+            console.log(`Moving to Part 2, chartCount: ${chartCount}`);
+            fvgPart = 2;
+            updateInstructions();
+            clearAllDrawings();
+            
+            // Force chart refresh
+            refreshChart();
+        } else {
+            console.log(`Part 2 complete, incrementing chartCount from ${chartCount}`);
+            chartCount = resultsData ? resultsData.chart_count : chartCount + 1;
+            console.log(`New chartCount: ${chartCount}`);
+            
+            if (chartCount > maxCharts) {
+                console.log("Exam finished, showing final results");
+                showFinalResults();
+                return;
+            }
+            
+            // Show loading indicator
+            document.getElementById('loading-overlay').classList.add('active');
+            
+            console.log(`Fetching new chart, chartCount: ${chartCount}`);
+            fetch('/fetch_new_chart')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    chartData = data.chart_data;
+                    
+                    // First clear the chart completely
+                    candleSeries.setData([]);
+                    
+                    // Wait a short time before setting new data for a visual refresh
+                    setTimeout(() => {
+                        if (Array.isArray(chartData) && chartData.length > 0) {
+                            candleSeries.setData(chartData);
+                            chartCount = data.chart_count; // Sync with server
+                            console.log(`Fetched new chart, updated chartCount: ${chartCount}`);
+                            document.getElementById('current-chart').textContent = chartCount;
+                            document.querySelector('.chart-progress').style.width = `${(chartCount / maxCharts) * 100}%`;
+                            document.getElementById('chart-symbol').textContent = `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
+                            fvgPart = 1; // Reset to bullish for new chart
+                            updateInstructions();
+                            clearAllDrawings();
+                            chart.timeScale().resetTimeScale();
+                            chart.timeScale().fitContent();
+                            
+                            if (chartCount === maxCharts) {
+                                document.getElementById('continue-btn').textContent = "Finish Exam";
+                            }
+                        } else {
+                            console.error("Invalid chart data received:", chartData);
+                            alert("Error: Received invalid chart data. Please refresh the page.");
+                        }
+                        
+                        document.getElementById('loading-overlay').classList.remove('active');
+                    }, 300);
+                })
+                .catch(error => {
+                    console.error('Error fetching new chart:', error);
+                    alert('Failed to load new chart. Please try refreshing the page.');
+                    document.getElementById('loading-overlay').classList.remove('active');
+                });
+        }
+        
+        const resultsSection = document.getElementById('results-section');
+        resultsSection.classList.remove('active');
+        document.querySelector('.exam-container').classList.remove('with-results');
+        panel.style.left = '10px';
+        panel.style.top = '10px';
+        xOffset = 10;
+        yOffset = 10;
+    });
+
+    // Simple refresh chart function without extra validations
+    function refreshChart() {
+        const currentData = candleSeries.data();
+        if (Array.isArray(currentData) && currentData.length > 0) {
+            candleSeries.setData([]);
+            
+            setTimeout(() => {
+                candleSeries.setData(currentData);
+                chart.timeScale().fitContent();
+            }, 100);
+        } else {
+            console.error("Cannot refresh chart - data is invalid or empty");
+        }
+    }
+
+    updateInstructions();
+    updateFVGPanel();
+    
+    function showFinalResults() {
+        // Create the final results view
+        let totalScore = 0;
+        let totalPossible = 0;
+        
+        chartScores.forEach(score => {
+            totalScore += score.score;
+            totalPossible += score.total;
+        });
+        
+        const percentage = totalPossible > 0 ? (totalScore / totalPossible) * 100 : 0;
+        let grade = "F";
+        if (percentage >= 90) grade = "A";
+        else if (percentage >= 80) grade = "B";
+        else if (percentage >= 70) grade = "C";
+        else if (percentage >= 60) grade = "D";
+        
+        // Hide chart and all other content
+        document.querySelector('.chart-section').style.display = 'none';
+        
+        // Show results in full width
+        const resultsSection = document.getElementById('results-section');
+        resultsSection.classList.add('active');
+        resultsSection.style.width = '100%';
+        document.querySelector('.exam-container').classList.add('with-results');
+        
+        // Create final results content
+        const resultsContent = document.getElementById('results-content');
+        resultsContent.innerHTML = `
+            <h2>Fair Value Gaps Exam Results</h2>
+            <div class="final-score">
+                <span class="final-score-value">Final Score: ${totalScore}/${totalPossible}</span>
+                <span class="final-score-percentage">${percentage.toFixed(1)}% (Grade: ${grade})</span>
+            </div>
+            <div class="final-bar-container">
+                <div class="final-bar" style="width: ${percentage}%"></div>
+            </div>
+            
+            <div class="chart-breakdown">
+                <h5>Performance by Chart</h5>
+                <ul class="chart-scores">
+                    ${chartScores.map((score, index) => `
+                        <li class="chart-score-item">
+                            <span class="chart-number">Chart ${Math.ceil((index + 1) / 2)}, ${index % 2 === 0 ? 'Bullish' : 'Bearish'}</span>
+                            <span class="chart-score">${score.score}/${score.total}</span>
+                            <div class="chart-mini-bar">
+                                <div class="chart-mini-progress" style="width: ${(score.total > 0 ? (score.score / score.total) * 100 : 0)}%"></div>
+                            </div>
+                        </li>
+                    `).join('')}
+                </ul>
+            </div>
+            
+            <div class="final-actions">
+                <button id="restart-exam-btn" class="btn btn-primary">Restart Exam</button>
+                <button id="return-home-btn" class="btn btn-secondary">Return to Home</button>
+            </div>
+        `;
+        
+        // Add event listeners for final action buttons
+        document.getElementById('restart-exam-btn').addEventListener('click', () => {
+            // Manually reset before redirect
+            fetch('/charting_exams').then(() => {
+                window.location.href = '/charting_exam/fair_value_gaps';
+            });
+        });
+        
+        document.getElementById('return-home-btn').addEventListener('click', () => {
+            window.location.href = '/charting_exams';
+        });
+        
+        // Update continue button
+        const continueBtn = document.getElementById('continue-btn');
+        continueBtn.textContent = "Download Results";
+        continueBtn.onclick = function() {
+            alert("Results download functionality would be implemented here.");
+        };
+    }
+
+    // Force a refresh after a short delay
+    setTimeout(refreshChart, 500);
+</script>
+
+<style>
+    .exam-progress {
+        margin-bottom: 20px;
+    }
+    .chart-indicator {
+        font-size: 1.2rem;
+        margin-right: 10px;
+    }
+    .chart-progress-bar {
+        width: 100%;
+        height: 10px;
+        background: #ddd;
+        border-radius: 5px;
+        overflow: hidden;
+    }
+    .chart-progress {
+        height: 100%;
+        background: #4CAF50;
+        transition: width 0.3s ease;
+    }
+    .exam-container {
+        display: flex;
+        gap: 20px;
+    }
+    .chart-section {
+        flex: 1;
+    }
+    .results-section {
+        width: 300px;
+        background: #f5f5f5;
+        border-radius: 8px;
+        padding: 20px;
+        display: none;
+    }
+    .results-section.active {
+        display: block;
+    }
+    .exam-container.with-results .chart-section {
+        flex: 0 0 800px;
+    }
+    .results-header h3 {
+        margin-top: 0;
+    }
+    .results-content {
+        margin-bottom: 20px;
+    }
+    .results-summary h4 {
+        margin: 0 0 10px;
+    }
+    .analysis-score.good {
+        color: #4CAF50;
+    }
+    .analysis-score.poor {
+        color: #F44336;
+    }
+    .score-statistics .stat-row {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 5px;
+    }
+    .stat-label {
+        color: #666;
+    }
+    .stat-value.neutral {
+        color: #333;
+    }
+    .stat-value.good {
+        color: #4CAF50;
+    }
+    .stat-value.poor {
+        color: #F44336;
+    }
+    .score-bar-container {
+        width: 100%;
+        height: 10px;
+        background: #ddd;
+        border-radius: 5px;
+        margin: 10px 0;
+    }
+    .score-bar {
+        height: 100%;
+        background: #4CAF50;
+        border-radius: 5px;
+    }
+    .feedback-section {
+        margin-top: 15px;
+        padding: 10px;
+        border-radius: 5px;
+    }
+    .correct-section {
+        background: #e8f5e9;
+        border: 1px solid #4CAF50;
+    }
+    .incorrect-section {
+        background: #ffebee;
+        border: 1px solid #F44336;
+    }
+    .missed-section {
+        background: #fff3e0;
+        border: 1px solid #FF9800;
+    }
+    .feedback-section h4 {
+        margin: 0 0 10px;
+        font-size: 1.1rem;
+    }
+    .feedback-grid {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+    .feedback-card {
+        background: #fff;
+        padding: 8px;
+        border-radius: 4px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+    }
+    .feedback-type {
+        display: inline-block;
+        padding: 2px 6px;
+        border-radius: 3px;
+        font-size: 0.8rem;
+        font-weight: bold;
+        color: #fff;
+    }
+    .feedback-type.bullish {
+        background: #4CAF50;
+    }
+    .feedback-type.bearish {
+        background: #F44336;
+    }
+    .feedback-type.incorrect {
+        background: #F44336;
+    }
+    .feedback-type.missed {
+        background: #FF9800;
+    }
+    .feedback-type.neutral {
+        background: #2196F3;
+    }
+    .feedback-price {
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: #333;
+    }
+    .feedback-advice {
+        margin: 0;
+        font-size: 0.85rem;
+        color: #666;
+        font-style: italic;
+    }
+    .final-score {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 10px;
+    }
+    .final-score-value {
+        font-size: 1.5rem;
+        font-weight: bold;
+    }
+    .final-score-percentage {
+        font-size: 1.5rem;
+        color: #4CAF50;
+    }
+    .final-bar-container {
+        width: 100%;
+        height: 10px;
+        background: #ddd;
+        border-radius: 5px;
+        margin-bottom: 20px;
+    }
+    .final-bar {
+        height: 100%;
+        background: #4CAF50;
+        border-radius: 5px;
+    }
+    .chart-breakdown h5 {
+        margin: 10px 0;
+    }
+    .chart-scores {
+        list-style: none;
+        padding: 0;
+    }
+    .chart-score-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 5px;
+    }
+    .chart-number {
+        width: 150px;
+    }
+    .chart-score {
+        width: 60px;
+    }
+    .chart-mini-bar {
+        flex: 1;
+        height: 5px;
+        background: #ddd;
+        border-radius: 3px;
+    }
+    .chart-mini-progress {
+        height: 100%;
+        background: #4CAF50;
+        border-radius: 3px;
+    }
+    .final-actions {
+        margin-top: 20px;
+        display: flex;
+        gap: 10px;
+    }
+    .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.5);
+        display: none;
+        justify-content: center;
+        align-items: center;
+        z-index: 1000;
+    }
+    .loading-overlay.active {
+        display: flex;
+    }
+    .loading-content {
+        background: white;
+        padding: 20px;
+        border-radius: 8px;
+        text-align: center;
+    }
+    .spinner {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid #4CAF50;
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        animation: spin 1s linear infinite;
+        margin: 0 auto 10px;
+    }
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
+    }
+    .panel {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        width: 200px;
+        max-height: 200px;
+        background: rgba(255, 255, 255, 0.9);
+        border: 1px solid #ccc;
+        border-radius: 5px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        z-index: 10;
+        overflow-y: auto;
+        font-size: 0.9rem;
+    }
+    .panel-header {
+        background: #4CAF50;
+        color: white;
+        padding: 5px;
+        text-align: center;
+        cursor: move;
+        font-weight: bold;
+    }
+    .panel-content {
+        padding: 5px;
+    }
+    .fvg-item {
+        margin-bottom: 5px;
+        padding: 3px;
+        border-bottom: 1px solid #eee;
+    }
+    .fvg-item:last-child {
+        border-bottom: none;
+    }
+    .fvg-label {
+        font-weight: bold;
+        color: #333;
+    }
+    .fvg-range, .fvg-date {
+        display: block;
+        color: #666;
+    }
+    .no-fvg-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.2);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        pointer-events: none;
+        z-index: 5;
+    }
+    .no-fvg-message {
+        background-color: rgba(255, 255, 255, 0.8);
+        padding: 10px 20px;
+        border-radius: 5px;
+        font-size: 18px;
+        font-weight: bold;
+        color: #333;
+    }
+    .special-item {
+        background-color: #f8f9fa;
+        border-left: 3px solid #ffc107;
+    }
+    .fvg-advice {
+        font-style: italic;
+        color: #6c757d;
+        display: block;
+        margin-top: 5px;
+        font-size: 0.85rem;
+    }
+    .error-message {
+        background-color: #ffebee;
+        border: 1px solid #f44336;
+        border-radius: 4px;
+        padding: 15px;
+        margin-bottom: 15px;
+    }
+    .error-message h4 {
+        color: #d32f2f;
+        margin-top: 0;
+        margin-bottom: 10px;
+    }
+</style>
 {% endblock %}
