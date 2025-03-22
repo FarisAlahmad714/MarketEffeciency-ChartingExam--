@@ -71,6 +71,12 @@
     let chartData = {{ chart_data|tojson|safe }};
     let resultsData = null; // Store response data for reference
     
+    // New tracking arrays for FVG visualization elements
+    let fvgHoverAreas = [];
+    let fvgLabels = [];
+    let fvgLineSeries = [];
+    let markers = [];
+    
     // Function to check if chart data is valid
     function validateChartData(chartData) {
         if (!Array.isArray(chartData) || chartData.length < 20) {
@@ -188,7 +194,6 @@
 
     let drawingMode = null; // 'rectangle', 'hline', or null
     let userFVGs = [];
-    let markers = [];
     let rectangles = [];
     let hlines = [];
     let startPoint = null;
@@ -643,80 +648,57 @@
         }
     });
 
-    // Function to draw fixed FVG lines
-    // Function to draw fixed FVG lines that stay attached to candlesticks
-// Function to draw correct FVG lines that only extend to the right
-// This is the function name you already have in your code
-//working
-function drawFixedFVGLines() {
-    // First clear any existing price lines
-    markers.forEach(line => {
-        if (typeof line.remove === 'function') {
-            line.remove();
-        }
-    });
-    markers = [];
-    
-    // Remove any existing FVG labels
-    document.querySelectorAll('.fvg-label').forEach(label => label.remove());
-    
-    // Skip if no results available
-    if (!resultsData || !resultsData.expected || !resultsData.expected.gaps) return;
-    
-    // Sort gaps by top price (highest first) for numbering from top to bottom
-    const sortedGaps = [...resultsData.expected.gaps].sort((a, b) => b.topPrice - a.topPrice);
-    
-    // Draw each FVG using the proper API settings
-    sortedGaps.forEach((gap, index) => {
-        const color = gap.type === 'bullish' ? '#FF9800' : '#F44336';
-        const fvgNumber = index + 1; // Start numbering from 1
+    // Function to create hover areas for FVG visualization
+    // This approach uses div elements for more stable positioning
+    function createFVGHoverAreas() {
+        // Clear any existing hover areas and labels
+        clearFVGVisualElements();
         
-        // Create a NEW series for the lines
-        const topSeries = chart.addLineSeries({
-            color: color,
-            lineWidth: 2,
-            lineStyle: 2,
-            lastValueVisible: false,
-            priceLineVisible: false
-        });
+        // Skip if no results available
+        if (!resultsData || !resultsData.expected || !resultsData.expected.gaps) return;
         
-        const bottomSeries = chart.addLineSeries({
-            color: color,
-            lineWidth: 2,
-            lineStyle: 2,
-            lastValueVisible: false,
-            priceLineVisible: false
-        });
+        // Sort gaps by top price (highest first) for numbering from top to bottom
+        const sortedGaps = [...resultsData.expected.gaps].sort((a, b) => b.topPrice - a.topPrice);
         
-        // Draw from the FVG end time to the right edge of the chart
-        const rightEdge = Math.max(...chartData.map(d => d.time));
-        
-        // Set exactly two points to create a line
-        topSeries.setData([
-            { time: gap.endTime, value: gap.topPrice },
-            { time: rightEdge, value: gap.topPrice }
-        ]);
-        
-        bottomSeries.setData([
-            { time: gap.endTime, value: gap.bottomPrice },
-            { time: rightEdge, value: gap.bottomPrice }
-        ]);
-        
-        // Store references to remove later
-        markers.push(topSeries, bottomSeries);
-        
-        // Add a visible label at the start of the gap
         const chartContainer = document.getElementById('chart-container');
-        const candleX = chart.timeScale().timeToCoordinate(gap.endTime);
-        const middleY = candleSeries.priceToCoordinate((gap.topPrice + gap.bottomPrice) / 2);
         
-        if (candleX && middleY) {
-            // Create a label for this FVG
+        // Create hover areas for each gap
+        sortedGaps.forEach((gap, index) => {
+            const fvgNumber = index + 1; // Start numbering from 1
+            const color = gap.type === 'bullish' ? '#FF9800' : '#F44336';
+            
+            // Add gap lines that only extend to the right
+            addGapLines(gap, fvgNumber, color);
+            
+            // Calculate the initial positions (will be updated in updateFVGPositions)
+            const candleX = chart.timeScale().timeToCoordinate(gap.endTime);
+            const topY = candleSeries.priceToCoordinate(gap.topPrice);
+            const bottomY = candleSeries.priceToCoordinate(gap.bottomPrice);
+            
+            if (!candleX || !topY || !bottomY) return; // Skip if coordinates not available
+            
+            // Create hover area (invisible by default, matches the exact gap height)
+            const hoverArea = document.createElement('div');
+            hoverArea.className = 'fvg-hover-area';
+            hoverArea.dataset.time = gap.endTime;
+            hoverArea.dataset.topPrice = gap.topPrice;
+            hoverArea.dataset.bottomPrice = gap.bottomPrice;
+            hoverArea.dataset.fvgNumber = fvgNumber;
+            hoverArea.dataset.type = gap.type;
+            
+            // Initial positioning (will be updated)
+            hoverArea.style.position = 'absolute';
+            hoverArea.style.left = (candleX) + 'px';
+            hoverArea.style.top = topY + 'px';
+            hoverArea.style.height = (bottomY - topY) + 'px';
+            hoverArea.style.width = '20px'; // Small area for hover
+            hoverArea.style.zIndex = '900';
+            hoverArea.style.cursor = 'pointer';
+            
+            // Create label (hidden by default)
             const label = document.createElement('div');
             label.className = 'fvg-label';
             label.style.position = 'absolute';
-            label.style.left = (candleX + 5) + 'px';
-            label.style.top = middleY + 'px';
             label.style.backgroundColor = color;
             label.style.color = 'white';
             label.style.padding = '2px 6px';
@@ -724,75 +706,254 @@ function drawFixedFVGLines() {
             label.style.fontWeight = 'bold';
             label.style.fontSize = '12px';
             label.style.zIndex = '1000';
-            label.style.transform = 'translateY(-50%)';
             label.style.whiteSpace = 'nowrap';
+            label.style.opacity = '0'; // Initially hidden
+            label.style.transition = 'opacity 0.2s';
+            label.style.pointerEvents = 'none'; // Prevent label from interfering with hover
             label.textContent = `Correct FVG ${fvgNumber}`;
+            label.dataset.fvgNumber = fvgNumber;
             
+            // Add hover events
+            hoverArea.addEventListener('mouseenter', () => {
+                label.style.opacity = '1';
+            });
+            
+            hoverArea.addEventListener('mouseleave', () => {
+                label.style.opacity = '0';
+            });
+            
+            // Add to the DOM
+            chartContainer.appendChild(hoverArea);
             chartContainer.appendChild(label);
             
-            // Store a reference to the label element
-            markers.push({
-                remove: () => {
-                    if (label.parentNode) {
-                        label.parentNode.removeChild(label);
-                    }
-                }
+            // Store references in the tracking arrays
+            fvgHoverAreas.push(hoverArea);
+            fvgLabels.push(label);
+        });
+        
+        // Initial position update
+        updateFVGPositions();
+    }
+
+    // Function to add gap lines (only extending to the right of the candle)
+    function addGapLines(gap, fvgNumber, color) {
+        try {
+            // Create series for the top and bottom lines
+            const topSeries = chart.addLineSeries({
+                color: color,
+                lineWidth: 2,
+                lineStyle: 2, // Dashed
+                lastValueVisible: false,
+                priceLineVisible: false,
+                crosshairMarkerVisible: false
             });
+            
+            const bottomSeries = chart.addLineSeries({
+                color: color,
+                lineWidth: 2,
+                lineStyle: 2, // Dashed
+                lastValueVisible: false,
+                priceLineVisible: false,
+                crosshairMarkerVisible: false
+            });
+            
+            // Draw from the FVG end time to the right edge of the chart
+            const rightEdge = Math.max(...chartData.map(d => d.time)) + 86400; // Add one day to ensure it reaches the edge
+            
+            // Set exactly two points to create a line
+            topSeries.setData([
+                { time: gap.endTime, value: gap.topPrice },
+                { time: rightEdge, value: gap.topPrice }
+            ]);
+            
+            bottomSeries.setData([
+                { time: gap.endTime, value: gap.bottomPrice },
+                { time: rightEdge, value: gap.bottomPrice }
+            ]);
+            
+            // Store references to remove later
+            fvgLineSeries.push(topSeries, bottomSeries);
+        } catch (error) {
+            console.error('Error adding gap lines:', error);
         }
-    });
-    
-    // Update label positions when chart changes
-    const updateLabelPositions = () => {
-        document.querySelectorAll('.fvg-label').forEach((label, i) => {
-            if (i < sortedGaps.length) {
-                const gap = sortedGaps[i];
-                const candleX = chart.timeScale().timeToCoordinate(gap.endTime);
-                const middleY = candleSeries.priceToCoordinate((gap.topPrice + gap.bottomPrice) / 2);
+    }
+
+    // Function to update all FVG visual elements positions
+    function updateFVGPositions() {
+        // Skip if no chart or chartContainer
+        const chartContainer = document.getElementById('chart-container');
+        if (!chart || !chartContainer) return;
+        
+        // Check if we have coordinates
+        if (!chart.timeScale().timeToCoordinate || !candleSeries.priceToCoordinate) return;
+        
+        // Calculate visible chart area
+        const chartRect = chartContainer.getBoundingClientRect();
+        const chartWidth = chartRect.width;
+        const chartHeight = chartRect.height;
+        
+        // Update hover areas and labels
+        for (let i = 0; i < fvgHoverAreas.length; i++) {
+            const hoverArea = fvgHoverAreas[i];
+            const label = fvgLabels.find(l => l.dataset.fvgNumber === hoverArea.dataset.fvgNumber);
+            
+            if (!hoverArea || !label) continue;
+            
+            try {
+                const time = parseInt(hoverArea.dataset.time);
+                const topPrice = parseFloat(hoverArea.dataset.topPrice);
+                const bottomPrice = parseFloat(hoverArea.dataset.bottomPrice);
                 
-                if (candleX && middleY) {
-                    label.style.left = (candleX + 5) + 'px';
-                    label.style.top = middleY + 'px';
-                    label.style.display = '';
-                } else {
+                if (isNaN(time) || isNaN(topPrice) || isNaN(bottomPrice)) continue;
+                
+                // Get coordinates from chart
+                const candleX = chart.timeScale().timeToCoordinate(time);
+                const topY = candleSeries.priceToCoordinate(topPrice);
+                const bottomY = candleSeries.priceToCoordinate(bottomPrice);
+                
+                if (candleX === null || topY === null || bottomY === null) {
+                    // Hide if out of view
+                    hoverArea.style.display = 'none';
                     label.style.display = 'none';
+                    continue;
                 }
+                
+                // Update hover area position (exact height of the gap)
+                hoverArea.style.display = '';
+                hoverArea.style.left = candleX + 'px';
+                hoverArea.style.top = topY + 'px';
+                hoverArea.style.height = Math.max(1, bottomY - topY) + 'px'; // Ensure at least 1px height
+                hoverArea.style.width = '20px'; // Fixed width for hover
+                
+                // Update label position (centered on the gap)
+                label.style.display = '';
+                const labelRect = label.getBoundingClientRect();
+                const labelWidth = labelRect.width || 100; // Fallback width
+                const labelHeight = labelRect.height || 20; // Fallback height
+                
+                // Calculate centered position
+                const labelY = topY + (bottomY - topY) / 2;
+                
+                // Keep label within chart boundaries
+                let labelX = candleX + 25; // 25px to the right of the hover area
+                let adjustedY = labelY - (labelHeight / 2);
+                
+                // Boundary checks
+                if (labelX + labelWidth > chartWidth) {
+                    labelX = candleX - labelWidth - 5; // Position left of the hover area
+                }
+                
+                if (adjustedY < 0) {
+                    adjustedY = 0;
+                } else if (adjustedY + labelHeight > chartHeight) {
+                    adjustedY = chartHeight - labelHeight;
+                }
+                
+                label.style.left = labelX + 'px';
+                label.style.top = adjustedY + 'px';
+            } catch (error) {
+                console.error('Error updating FVG position:', error);
+            }
+        }
+    }
+
+    // Function to clear all FVG visual elements
+    function clearFVGVisualElements() {
+        // Clear hover areas
+        fvgHoverAreas.forEach(area => {
+            if (area && area.parentNode) {
+                area.parentNode.removeChild(area);
             }
         });
-    };
-    
-    // Add listeners to update labels on chart changes
-    chart.timeScale().subscribeVisibleTimeRangeChange(updateLabelPositions);
-    chart.priceScale('right').subscribeVisiblePriceRangeChange(updateLabelPositions);
-    chart.subscribeCrosshairMove(updateLabelPositions);
-}
-// Function to update FVG line positions when chart view changes
-function updateFVGLinePositions() {
-    if (!resultsData) return; // Skip if no results available
-    
-    const chartContainer = document.getElementById('chart-container');
-    if (!chartContainer) return;
-    
-    // Update each custom line
-    document.querySelectorAll('.custom-fvg-line').forEach(line => {
-        const time = parseInt(line.dataset.time);
-        const price = parseFloat(line.dataset.price);
-        if (isNaN(time) || isNaN(price)) return; // Skip if invalid data
+        fvgHoverAreas = [];
         
-        const candleX = chart.timeScale().timeToCoordinate(time);
-        const priceY = candleSeries.priceToCoordinate(price);
+        // Clear labels
+        fvgLabels.forEach(label => {
+            if (label && label.parentNode) {
+                label.parentNode.removeChild(label);
+            }
+        });
+        fvgLabels = [];
         
-        if (candleX && priceY) {
-            // Update line position
-            line.style.left = candleX + 'px';
-            line.style.top = priceY + 'px';
-            line.style.width = (chartContainer.clientWidth - candleX) + 'px';
-            line.style.display = ''; // Make sure it's visible
-        } else {
-            // If candle is not visible, hide the line
-            line.style.display = 'none';
+        // Remove line series with try/catch to prevent errors
+        fvgLineSeries.forEach(series => {
+            try {
+                if (series && chart && typeof chart.removeSeries === 'function') {
+                    chart.removeSeries(series);
+                }
+            } catch (error) {
+                console.error('Error removing series:', error);
+            }
+        });
+        fvgLineSeries = [];
+    }
+
+    // Completely reset all FVG visualization elements and data
+    function resetFVGVisualization() {
+        try {
+            // Clear all visual elements
+            clearFVGVisualElements();
+            
+            // Reset the results data
+            resultsData = null;
+            
+            // Make sure other chart elements are reset properly
+            markers = [];
+            
+            // Clear any custom line elements
+            document.querySelectorAll('.custom-fvg-line').forEach(line => {
+                if (line.parentNode) {
+                    line.parentNode.removeChild(line);
+                }
+            });
+        } catch (error) {
+            console.error('Error in resetFVGVisualization:', error);
         }
-    });
+    }
+
+    // Replace the original drawFixedFVGLines function with our enhanced version
+    function drawFixedFVGLines() {
+        try {
+            // Clear existing elements first
+            clearFVGVisualElements();
+            
+            // Create new hover areas with labels
+            createFVGHoverAreas();
+            
+            // Set up event listeners for chart movements
+            setupChartEventListeners();
+        } catch (error) {
+            console.error('Error in drawFixedFVGLines:', error);
+        }
+    }
+
+    // Set up all needed chart event listeners
+    // Set up all needed chart event listeners - MINIMAL FIX VERSION
+function setupChartEventListeners() {
+    try {
+        // Don't try to unsubscribe - this API doesn't support it
+        // Just add new listeners which will override any existing ones
+        
+        // Subscribe to chart movements
+        chart.timeScale().subscribeVisibleTimeRangeChange(updateFVGPositions);
+        
+        // Use try/catch for each subscription in case method doesn't exist
+        try {
+            chart.priceScale('right').subscribeVisiblePriceRangeChange(updateFVGPositions);
+        } catch (e) {
+            console.log('Price scale events not supported in this version');
+        }
+        
+        chart.subscribeCrosshairMove(updateFVGPositions);
+        
+        // Also update on window resize
+        window.removeEventListener('resize', updateFVGPositions);
+        window.addEventListener('resize', updateFVGPositions);
+    } catch (error) {
+        console.error('Error in setupChartEventListeners:', error);
+    }
 }
+
     document.getElementById('submit-btn').addEventListener('click', () => {
         if (userFVGs.length === 0) {
             alert("Please mark at least one Fair Value Gap or use the 'No FVGs Found' button before submitting.");
@@ -943,8 +1104,12 @@ function updateFVGLinePositions() {
         });
     });
 
-    // Update the continue button handler to properly clear everything
-document.getElementById('continue-btn').addEventListener('click', function() {
+    // Updated continue button handler
+    // Updated continue button handler - fixed chart.series() error
+    document.getElementById('continue-btn').addEventListener('click', function() {
+    // Store the next_part value before clearing resultsData
+    const hasNextPart = resultsData && resultsData.next_part === 2;
+    
     // Clear any custom FVG lines and series
     markers.forEach(marker => {
         if (typeof marker.remove === 'function') {
@@ -960,18 +1125,27 @@ document.getElementById('continue-btn').addEventListener('click', function() {
         }
     });
     
-    // Remove any line series that might have been added
-    chart.series().forEach(series => {
-        if (series !== candleSeries) {
-            chart.removeSeries(series);
+    // Remove any line series using our tracked fvgLineSeries array
+    fvgLineSeries.forEach(series => {
+        try {
+            if (series && chart && typeof chart.removeSeries === 'function') {
+                chart.removeSeries(series);
+            }
+        } catch (error) {
+            console.error('Error removing series:', error);
         }
     });
+    fvgLineSeries = [];
     
-    // Reset results data to prevent redrawing
-    resultsData = null;
+    // Check if we're at the end of the exam (5th chart, part 2)
+    if (chartCount >= maxCharts && fvgPart === 2 && !hasNextPart) {
+        console.log("Exam complete! This was chart 5 part 2");
+        showFinalResults();
+        return;
+    }
     
-    // Continue with the existing code
-    if (resultsData && resultsData.next_part === 2) {
+    // Continue with the proper flow using the stored value
+    if (hasNextPart) {
         console.log(`Moving to Part 2, chartCount: ${chartCount}`);
         fvgPart = 2;
         updateInstructions();
@@ -980,9 +1154,78 @@ document.getElementById('continue-btn').addEventListener('click', function() {
         // Force chart refresh
         refreshChart();
     } else {
-        // Rest of your existing code for fetching new chart, etc.
-        // ...
+        console.log(`Part 2 complete, moving to next chart from ${chartCount}`);
+        // Rest of your existing code for fetching new chart
+        const loadingOverlay = document.getElementById('loading-overlay');
+        loadingOverlay.classList.add('active');
+        
+        fetch('/fetch_new_chart')
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Update chart count display - use server value
+                chartCount = data.chart_count;
+                document.getElementById('current-chart').textContent = chartCount;
+                document.querySelector('.chart-progress').style.width = `${(chartCount / 5) * 100}%`;
+                
+                // Check if exam is complete 
+                if (chartCount >= maxCharts) {
+                    console.log("Last chart reached, this is chart 5 part 1");
+                    // Don't show final results yet, need to do part 2 first
+                }
+                
+                console.log(`Fetched new chart, chartCount: ${chartCount}`);
+                
+                // Reset FVG part and update instructions
+                fvgPart = data.fvg_part || 1;
+                updateInstructions();
+                
+                // Update chart data and symbol
+                if (validateChartData(data.chart_data)) {
+                    chartData = data.chart_data;
+                    
+                    // Reset the chart
+                    candleSeries.setData([]);
+                    
+                    // Wait a short time before setting new data
+                    setTimeout(() => {
+                        candleSeries.setData(chartData);
+                        document.getElementById('chart-symbol').textContent = 
+                            `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
+                            
+                        // Update FVG panel and clear drawings
+                        clearAllDrawings();
+                        updateFVGPanel();
+                        
+                        // Reset the zoom
+                        chart.timeScale().resetTimeScale();
+                        chart.timeScale().fitContent();
+                        
+                        // Update the continue button text on last chart
+                        if (chartCount === maxCharts) {
+                            document.getElementById('continue-btn').textContent = "Finish Exam";
+                        }
+                        
+                        loadingOverlay.classList.remove('active');
+                    }, 500);
+                } else {
+                    console.error("Invalid chart data received");
+                    handleChartError();
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching new chart:', error);
+                loadingOverlay.classList.remove('active');
+                alert('Failed to load the next chart. Please try again.');
+            });
     }
+    
+    // Clear results data AFTER flow decision has been made
+    resultsData = null;
     
     const resultsSection = document.getElementById('results-section');
     resultsSection.classList.remove('active');
@@ -992,7 +1235,6 @@ document.getElementById('continue-btn').addEventListener('click', function() {
     xOffset = 10;
     yOffset = 10;
 });
-
     // Simple refresh chart function without extra validations
     function refreshChart() {
         const currentData = candleSeries.data();
@@ -1108,9 +1350,9 @@ document.getElementById('continue-btn').addEventListener('click', function() {
 
     // Handle resize to update custom FVG lines
     window.addEventListener('resize', function() {
-        // Redraw custom FVG lines if results are available
+        // Update FVG positions if results are available
         if (resultsData) {
-            setTimeout(drawFixedFVGLines, 100);
+            setTimeout(updateFVGPositions, 100);
         }
     });
 
@@ -1452,6 +1694,18 @@ document.getElementById('continue-btn').addEventListener('click', function() {
     .custom-fvg-line {
         pointer-events: none;
         z-index: 1000;
+    }
+    /* New styles for FVG hover areas */
+    .fvg-hover-area {
+        background-color: transparent;
+    }
+    
+    .fvg-hover-area:hover {
+        background-color: rgba(255, 255, 255, 0.1);
+    }
+    
+    .fvg-label {
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
     }
 </style>
 {% endblock %}
