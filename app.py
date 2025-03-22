@@ -1150,7 +1150,22 @@ def validate_drawing():
             
     elif exam_type == 'swing_analysis':
         validation_result = validate_swing_points(drawings, chart_data, interval)
-        chart_count = exam_data.get('chart_count', 1)
+        
+        # Store the score in session
+        exam_data['scores'].append(validation_result['score'])
+        
+        # Get the current chart count
+        current_chart_count = exam_data.get('chart_count', 1)
+        
+        # Increment chart count if not at max
+        if current_chart_count < 5:
+            exam_data['chart_count'] = current_chart_count + 1
+        
+        # Update session
+        session['exam_data'] = exam_data
+        
+        # Return the updated chart count to the client
+        chart_count = exam_data['chart_count']
         
     elif exam_type == 'fair_value_gaps':
         fvg_part = exam_data.get('fvg_part', 1)
@@ -1178,7 +1193,7 @@ def validate_drawing():
     else:
         return jsonify({'success': False, 'message': 'Exam type not implemented yet'})
 
-    if exam_type not in ['fibonacci_retracement', 'fair_value_gaps']:
+    if exam_type not in ['fibonacci_retracement', 'fair_value_gaps', 'swing_analysis']:
         exam_data['scores'].append(validation_result['score'])
     session['exam_data'] = exam_data
 
