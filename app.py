@@ -181,7 +181,96 @@ def fetch_chart_data(coin=None, timeframe=None, limit=8760):  # Set a high limit
     logging.debug(f"Final chart data length: {len(chart_data)}")
     logging.debug(f"Sample of processed chart data: {chart_data[-5:]}")
     
+    # Validate the chart data before returning
+    is_valid, message = validate_chart_data(chart_data, coin, timeframe)
+    if not is_valid:
+        logging.warning(f"Generated invalid chart data: {message}")
+        return refresh_problem_chart()
+    
     return chart_data, coin, timeframe
+
+def validate_chart_data(data, coin, timeframe):
+    """
+    Validates chart data to ensure it's properly formed and contains enough candles.
+    
+    Args:
+        data: The chart data to validate
+        coin: The cryptocurrency being displayed
+        timeframe: The timeframe of the chart
+        
+    Returns:
+        tuple: (is_valid, message)
+    """
+    if not data or len(data) < 20:
+        return False, f"Insufficient data for {coin} ({timeframe}): Only {len(data) if data else 0} candles."
+    
+    # Check for too many identical candles in a row (corrupted data)
+    identical_candles = 0
+    max_identical = 0
+    
+    for i in range(1, len(data)):
+        if (data[i]['open'] == data[i-1]['open'] and 
+            data[i]['high'] == data[i-1]['high'] and 
+            data[i]['low'] == data[i-1]['low'] and 
+            data[i]['close'] == data[i-1]['close']):
+            identical_candles += 1
+        else:
+            identical_candles = 0
+        
+        max_identical = max(max_identical, identical_candles)
+    
+    if max_identical > 5:  # More than 5 identical candles in a row is suspicious
+        return False, f"Chart data for {coin} ({timeframe}) may be corrupted (found {max_identical+1} identical candles)."
+    
+    return True, "Chart data is valid."
+
+def refresh_problem_chart():
+    """
+    Force refresh of chart data when issues are detected.
+    
+    Returns:
+        tuple: (new_chart_data, coin, timeframe)
+    """
+    # Try another coin if the current one has problems
+    all_coins = ['bitcoin', 'ethereum', 'binancecoin', 'solana', 'cosmos', 'ripple', 'litecoin', 'chainlink']
+    coin = random.choice(all_coins)
+    timeframe = random.choice(['1d', '4h'])  # Use more reliable timeframes
+    
+    # Try to get data with more reliable settings
+    for attempt in range(3):  # Try up to 3 times
+        chart_data, selected_coin, selected_timeframe = fetch_chart_data(coin, timeframe)
+        
+        # Skip the validation call here to avoid infinite recursion
+        if chart_data and len(chart_data) >= 20:
+            return chart_data, selected_coin, selected_timeframe
+            
+        logging.warning(f"Attempt {attempt+1}: Failed to get valid chart data")
+        coin = random.choice([c for c in all_coins if c != coin])  # Try a different coin
+    
+    # If we can't get good data after multiple attempts, return a simple synthetic chart
+    logging.error("Unable to fetch valid chart data after multiple attempts. Using synthetic data.")
+    
+    # Create synthetic data as a last resort
+    synthetic_data = []
+    base_price = 100.0
+    for i in range(100):
+        price_change = (random.random() - 0.5) * 2.0  # Random movement
+        open_price = base_price
+        close_price = base_price + price_change
+        high_price = max(open_price, close_price) + random.random() * 0.5
+        low_price = min(open_price, close_price) - random.random() * 0.5
+        
+        synthetic_data.append({
+            'time': int(datetime.now().timestamp()) - (100 - i) * 86400,  # One day apart
+            'open': open_price,
+            'high': high_price,
+            'low': low_price,
+            'close': close_price
+        })
+        
+        base_price = close_price  # Next candle starts at previous close
+    
+    return synthetic_data, "SYNTHETIC", "1d"
 
 def detect_swing_points(data, lookback=5, timeframe='4h', significance_threshold=0.01):
     lookback_map = {'1h': 8, '4h': 5, '1d': 3, '1w': 2}
@@ -235,26 +324,22 @@ def determine_trend(data):
     else:
         return 'sideways'
 
-def detect_fair_value_gaps(data, gap_type='bullish'):
+def detect_fair_value_gaps(data, gap_type='bullish', min_gap_percent=0.005):
     """
-    Detect Fair Value Gaps (FVGs) based on precise visual pattern.
+    SIMPLE FVG detection that strictly follows the THREE CANDLE pattern.
     
-    For a Bullish FVG:
-    - First candle must be bearish (close < open)
-    - Third candle must be bullish (close > open)
-    - NO OVERLAP between first candle's high and third candle's low
-      (i.e., third candle's low > first candle's high)
+    Bullish FVG:
+    - THREE CANDLE pattern
+    - FIRST candle high and THIRD candle low MUST NOT OVERLAP
     
-    For a Bearish FVG:
-    - First candle must be bullish (close > open)
-    - Third candle must be bearish (close < open)
-    - NO OVERLAP between first candle's low and third candle's high
-      (i.e., third candle's high < first candle's low)
+    Bearish FVG:
+    - THREE CANDLE pattern
+    - FIRST candle low and THIRD candle high MUST NOT OVERLAP
     
     Args:
         data: List of candle data (OHLC)
         gap_type: 'bullish' or 'bearish'
-        
+    
     Returns:
         List of detected FVGs
     """
@@ -262,466 +347,305 @@ def detect_fair_value_gaps(data, gap_type='bullish'):
         return []
     
     gaps = []
-    logging.debug(f"Analyzing {len(data)} candles for {gap_type} FVGs")
     
-    # Process each set of three consecutive candles
+    # Calculate minimum gap size for significance
+    price_range = max(c['high'] for c in data) - min(c['low'] for c in data) if data else 1
+    min_gap_size = price_range * min_gap_percent
+    
+    # Look for exactly THREE candle patterns
     for i in range(len(data) - 2):
-        candle1 = data[i]
-        candle2 = data[i+1]  # Middle candle
-        candle3 = data[i+2]
+        first_candle = data[i]
+        middle_candle = data[i + 1]  # We need the middle candle as part of the pattern
+        third_candle = data[i + 2]
         
-        # Check if candles are bullish or bearish
-        candle1_is_bearish = candle1['close'] < candle1['open']
-        candle1_is_bullish = candle1['close'] > candle1['open']
-        candle3_is_bearish = candle3['close'] < candle3['open']
-        candle3_is_bullish = candle3['close'] > candle3['open']
-        
-        # Check for exact pattern match based on the visuals provided
         if gap_type == 'bullish':
-            # 1. First candle must be bearish
-            if not candle1_is_bearish:
-                continue
-                
-            # 2. Third candle must be bullish
-            if not candle3_is_bullish:
-                continue
-                
-            # 3. NO OVERLAP - Third candle's low must be above first candle's high
-            if not (candle3['low'] > candle1['high']):
-                continue
-                
-            # We have a valid bullish FVG
-            gap = {
-                'startTime': candle1['time'],
-                'endTime': candle3['time'],
-                'topPrice': candle3['low'],  # Top of the gap
-                'bottomPrice': candle1['high'],  # Bottom of the gap
-                'type': 'bullish',
-                'size': candle3['low'] - candle1['high']
-            }
+            # FIRST candle high and THIRD candle low must NOT overlap
+            gap_size = third_candle['low'] - first_candle['high']
             
-            logging.debug(f"Found bullish FVG: {gap}")
-            gaps.append(gap)
-            
+            if gap_size > 0 and gap_size >= min_gap_size:  # No overlap
+                logging.debug(f"Bullish FVG found at index {i}")
+                
+                gaps.append({
+                    'startTime': first_candle['time'],
+                    'endTime': third_candle['time'],
+                    'topPrice': third_candle['low'],
+                    'bottomPrice': first_candle['high'],
+                    'type': 'bullish',
+                    'size': gap_size,
+                    'firstCandleIndex': i,
+                    'thirdCandleIndex': i + 2
+                })
+        
         elif gap_type == 'bearish':
-            # 1. First candle must be bullish
-            if not candle1_is_bullish:
-                continue
-                
-            # 2. Third candle must be bearish
-            if not candle3_is_bearish:
-                continue
-                
-            # 3. NO OVERLAP - Third candle's high must be below first candle's low
-            if not (candle3['high'] < candle1['low']):
-                continue
-                
-            # We have a valid bearish FVG
-            gap = {
-                'startTime': candle1['time'],
-                'endTime': candle3['time'],
-                'topPrice': candle1['low'],  # Top of the gap
-                'bottomPrice': candle3['high'],  # Bottom of the gap
-                'type': 'bearish',
-                'size': candle1['low'] - candle3['high']
-            }
+            # FIRST candle low and THIRD candle high must NOT overlap
+            gap_size = first_candle['low'] - third_candle['high']
             
-            logging.debug(f"Found bearish FVG: {gap}")
-            gaps.append(gap)
+            if gap_size > 0 and gap_size >= min_gap_size:  # No overlap
+                logging.debug(f"Bearish FVG found at index {i}")
+                
+                gaps.append({
+                    'startTime': first_candle['time'],
+                    'endTime': third_candle['time'],
+                    'topPrice': first_candle['low'],
+                    'bottomPrice': third_candle['high'],
+                    'type': 'bearish',
+                    'size': gap_size,
+                    'firstCandleIndex': i,
+                    'thirdCandleIndex': i + 2
+                })
     
     # Sort gaps by size (largest first)
     gaps.sort(key=lambda x: x['size'], reverse=True)
     
-    logging.debug(f"Detected {len(gaps)} {gap_type} FVGs")
-    return gaps
+    # Limit to the most significant gaps - at most 5 to avoid overcrowding
+    result = gaps[:5]
     
-@app.route('/charting_exams')
-def charting_exams():
-    session.pop('exam_data', None)
-    return render_template('index.html')
+    logging.debug(f"Detected {len(result)} {gap_type} FVGs")
+    return result
 
-@app.route('/charting_exam/swing_analysis', methods=['GET'])
-def swing_analysis():
-    if 'exam_data' not in session:
-        session['exam_data'] = {
-            'chart_count': 1,
-            'scores': [],
-            'chart_data': None,
-            'coin': None,
-            'timeframe': None
-        }
-
-    exam_data = session['exam_data']
-
-    chart_data, coin, timeframe = fetch_chart_data()
-    if not chart_data:
-        return render_template(
-            'swing_analysis.html',
-            chart_data=[],
-            progress={'chart_count': exam_data['chart_count']},
-            symbol="ERROR",
-            timeframe=timeframe,
-            error="Failed to fetch chart data."
-        )
+def validate_fair_value_gaps(drawings, chart_data, interval, part):
+    """
+    Enhanced validation of user-identified FVGs with improved accuracy and reliability.
+    Focused on the specific part of the exam (bullish or bearish).
     
-    exam_data['chart_data'] = chart_data
-    exam_data['coin'] = coin
-    exam_data['timeframe'] = timeframe
-    session['exam_data'] = exam_data
-
-    return render_template(
-        'swing_analysis.html',
-        chart_data=chart_data,
-        progress={'chart_count': exam_data['chart_count']},
-        symbol=coin.upper(),
-        timeframe=timeframe
-    )
-
-@app.route('/charting_exam/fibonacci_retracement', methods=['GET', 'POST'])
-def fibonacci_retracement():
-    if request.args.get('reset') == 'true':
-        session.pop('exam_data', None)
-
-    if 'exam_data' not in session:
-        session['exam_data'] = {
-            'chart_count': 1,
-            'fibonacci_part': 1,
-            'scores': [],
-            'chart_data': None,
-            'coin': None,
-            'timeframe': None
-        }
-
-    exam_data = session['exam_data']
-
-    if request.method == 'GET':
-        chart_data, coin, timeframe = fetch_chart_data()
-        if not chart_data:
-            return render_template(
-                'fibonacci_retracement.html',
-                chart_data=[],
-                progress={'chart_count': exam_data['chart_count'], 'fibonacci_part': exam_data['fibonacci_part']},
-                symbol="ERROR",
-                timeframe=timeframe,
-                error="Failed to fetch chart data."
-            )
+    Args:
+        drawings: User submitted FVG drawings
+        chart_data: Chart candle data
+        interval: Timeframe interval
+        part: 1 for bullish, 2 for bearish
         
-        exam_data['chart_data'] = chart_data
-        exam_data['coin'] = coin
-        exam_data['timeframe'] = timeframe
-        exam_data['fibonacci_part'] = 1
-        session['exam_data'] = exam_data
-
-        logging.debug(f"Fibonacci Retracement - Stored Chart Data Length: {len(chart_data)}")
-        logging.debug(f"Fibonacci Retracement - Stored Chart Data Sample: {chart_data[:5]}")
-
-        return render_template(
-            'fibonacci_retracement.html',
-            chart_data=chart_data,
-            progress={'chart_count': exam_data['chart_count'], 'fibonacci_part': exam_data['fibonacci_part']},
-            symbol=coin.upper(),
-            timeframe=timeframe
-        )
-    return jsonify({'message': 'Fibonacci Retracement POST received'})
-
-@app.route('/charting_exam/fair_value_gaps', methods=['GET', 'POST'])
-def fair_value_gaps():
-    if 'exam_data' not in session:
-        session['exam_data'] = {
-            'chart_count': 1,
-            'fvg_part': 1,
-            'scores': [],
-            'chart_data': None,
-            'coin': None,
-            'timeframe': None
-        }
-
-    exam_data = session['exam_data']
-
-    if request.method == 'GET':
-        chart_data, coin, timeframe = fetch_chart_data()
-        if not chart_data:
-            return render_template(
-                'fair_value_gaps.html',
-                chart_data=[],
-                progress={'chart_count': exam_data['chart_count'], 'fvg_part': exam_data['fvg_part']},
-                symbol="ERROR",
-                timeframe=timeframe,
-                error="Failed to fetch chart data."
-            )
-        
-        exam_data['chart_data'] = chart_data
-        exam_data['coin'] = coin
-        exam_data['timeframe'] = timeframe
-        exam_data['fvg_part'] = 1
-        session['exam_data'] = exam_data
-
-        logging.debug(f"Fair Value Gaps - Stored Chart Data Length: {len(chart_data)}")
-        logging.debug(f"Fair Value Gaps - Stored Chart Data Sample (last 5): {chart_data[-5:]}")
-        logging.debug(f"Fair Value Gaps - Coin: {coin}, Timeframe: {timeframe}")
-
-        return render_template(
-            'fair_value_gaps.html',
-            chart_data=chart_data,
-            progress={'chart_count': exam_data['chart_count'], 'fvg_part': exam_data['fvg_part']},
-            symbol=coin.upper(),
-            timeframe=timeframe
-        )
-    return jsonify({'message': 'Fair Value Gaps POST received'})
-
-@app.route('/charting_exam/orderblocks', methods=['GET', 'POST'])
-def orderblocks():
-    if 'exam_data' not in session:
-        session['exam_data'] = {
-            'chart_count': 1,
-            'scores': [],
-            'chart_data': None,
-            'coin': None,
-            'timeframe': None
-        }
-
-    exam_data = session['exam_data']
-
-    if request.method == 'GET':
-        chart_data, coin, timeframe = fetch_chart_data()
-        if not chart_data:
-            return render_template(
-                'orderblocks.html',
-                chart_data=[],
-                progress={'chart_count': exam_data['chart_count']},
-                symbol="ERROR",
-                timeframe=timeframe,
-                error="Failed to fetch chart data."
-            )
-        
-        exam_data['chart_data'] = chart_data
-        exam_data['coin'] = coin
-        exam_data['timeframe'] = timeframe
-        session['exam_data'] = exam_data
-
-        return render_template(
-            'orderblocks.html',
-            chart_data=chart_data,
-            progress={'chart_count': exam_data['chart_count']},
-            symbol=coin.upper(),
-            timeframe=timeframe
-        )
-    return jsonify({'message': 'Orderblocks POST received'})
-
-@app.route('/fetch_new_chart', methods=['GET'])
-def fetch_new_chart():
-    exam_data = session.get('exam_data', {'chart_count': 1, 'fibonacci_part': 1, 'fvg_part': 1})
+    Returns:
+        Validation results
+    """
+    # Ensure we're only validating the correct FVG type for the current part
+    gap_type = 'bullish' if part == 1 else 'bearish'
     
-    current_chart_count = exam_data.get('chart_count', 1)
-    
-    chart_data, coin, timeframe = fetch_chart_data()
-    if not chart_data:
-        return jsonify({
-            'chart_data': [],
-            'chart_count': current_chart_count,
-            'fibonacci_part': exam_data.get('fibonacci_part', 1),
-            'fvg_part': exam_data.get('fvg_part', 1),
-            'symbol': "ERROR",
-            'timeframe': timeframe,
-            'error': "Failed to fetch chart data."
-        })
-
-    if 'fibonacci_part' in exam_data:
-        exam_data['fibonacci_part'] = 1
-    if 'fvg_part' in exam_data:
-        exam_data['fvg_part'] = 1
-        
-    exam_data['chart_data'] = chart_data
-    exam_data['coin'] = coin
-    exam_data['timeframe'] = timeframe
-    session['exam_data'] = exam_data
-
-    logging.debug(f"Fetch New Chart - Stored Chart Data Length: {len(chart_data)}")
-    logging.debug(f"Fetch New Chart - Stored Chart Data Sample: {chart_data[:5]}")
-    logging.debug(f"Fetch New Chart - Current chart_count: {exam_data['chart_count']}")
-
-    return jsonify({
-        'chart_data': chart_data,
-        'chart_count': exam_data['chart_count'],
-        'fibonacci_part': exam_data.get('fibonacci_part', 1),
-        'fvg_part': exam_data.get('fvg_part', 1),
-        'symbol': coin.upper(),
-        'timeframe': timeframe
-    })
-
-@app.route('/charting_exam/validate', methods=['POST'])
-def validate_drawing():
-    data = request.get_json()
-    exam_type = data.get('examType')
-    drawings = data.get('drawings', [])
-    chart_count = data.get('chartCount')
-
-    exam_data = session.get('exam_data', {})
-    chart_data = exam_data.get('chart_data', [])
-    interval = exam_data.get('timeframe', '4h')
-    
-    if exam_type == 'fibonacci_retracement':
-        fibonacci_part = exam_data.get('fibonacci_part', 1)
-        chart_count = exam_data.get('chart_count', 1)
-        validation_result = validate_fibonacci_retracement(drawings, chart_data, interval, fibonacci_part)
-        
-        if fibonacci_part == 1:
-            exam_data['scores'].append({'uptrend': validation_result['score']})
-            exam_data['fibonacci_part'] = 2
-            session['exam_data'] = exam_data
-            validation_result['next_part'] = 2
-        else:
-            exam_data['scores'][-1]['downtrend'] = validation_result['score']
-            avg_score = (exam_data['scores'][-1]['uptrend'] + validation_result['score']) / 2
-            exam_data['scores'][-1]['average'] = avg_score
-            
-            current_chart_count = exam_data.get('chart_count', 1)
-            if current_chart_count < 5:
-                exam_data['chart_count'] = current_chart_count + 1
-            exam_data['fibonacci_part'] = 1
-            
-            session['exam_data'] = exam_data
-            validation_result['next_part'] = None
-            chart_count = exam_data['chart_count']
-            
-    elif exam_type == 'swing_analysis':
-        validation_result = validate_swing_points(drawings, chart_data, interval)
-        chart_count = exam_data.get('chart_count', 1)
-        
-    elif exam_type == 'fair_value_gaps':
-        fvg_part = exam_data.get('fvg_part', 1)
-        chart_count = exam_data.get('chart_count', 1)
-        validation_result = validate_fair_value_gaps(drawings, chart_data, interval, fvg_part)
-        
-        if fvg_part == 1:
-            exam_data['scores'].append({'bullish': validation_result['score']})
-            exam_data['fvg_part'] = 2
-            session['exam_data'] = exam_data
-            validation_result['next_part'] = 2
-        else:
-            exam_data['scores'][-1]['bearish'] = validation_result['score']
-            avg_score = (exam_data['scores'][-1]['bullish'] + validation_result['score']) / 2
-            exam_data['scores'][-1]['average'] = avg_score
-            
-            current_chart_count = exam_data.get('chart_count', 1)
-            if current_chart_count < 5:
-                exam_data['chart_count'] = current_chart_count + 1
-            exam_data['fvg_part'] = 1
-            
-            session['exam_data'] = exam_data
-            validation_result['next_part'] = None
-            chart_count = exam_data['chart_count']
-    else:
-        return jsonify({'success': False, 'message': 'Exam type not implemented yet'})
-
-    if exam_type not in ['fibonacci_retracement', 'fair_value_gaps']:
-        exam_data['scores'].append(validation_result['score'])
-    session['exam_data'] = exam_data
-
-    response = {
-        'success': validation_result['success'],
-        'message': validation_result['message'],
-        'chart_count': chart_count,
-        'feedback': validation_result['feedback'],
-        'score': validation_result['score'],
-        'totalExpectedPoints': validation_result['totalExpectedPoints'],
-        'expected': validation_result.get('expected', {})
-    }
-    
-    if exam_type == 'fibonacci_retracement':
-        response['fibonacci_part'] = fibonacci_part
-        response['next_part'] = validation_result.get('next_part')
-    elif exam_type == 'fair_value_gaps':
-        response['fvg_part'] = fvg_part
-        response['next_part'] = validation_result.get('next_part')
-        
-    response['symbol'] = exam_data.get('coin', 'Unknown').upper()
-    
-    return jsonify(response)
-
-def validate_swing_points(drawings, chart_data, interval):
-    if not chart_data or len(chart_data) < 10:
+    # Validate chart data before proceeding
+    if not chart_data or len(chart_data) < 20:
         return {
             'success': False,
-            'message': 'Insufficient chart data for validation.',
+            'message': 'Invalid chart data. Please try another chart.',
             'score': 0,
-            'feedback': {'correct': [], 'incorrect': [{'advice': 'No chart data available. Please try again with a different chart.'}]},
-            'expected': {'highs': [], 'lows': []},
-            'totalExpectedPoints': 0
+            'feedback': {
+                'correct': [],
+                'incorrect': [{
+                    'type': 'error',
+                    'advice': 'The chart data appears to be incomplete. Please click "Continue" to get a new chart.'
+                }]
+            },
+            'totalExpectedPoints': 0,
+            'expected': {'gaps': []}
         }
-
-    swing_points = detect_swing_points(chart_data, timeframe=interval)
-    highs = swing_points['highs']
-    lows = swing_points['lows']
-    expected = {'highs': highs, 'lows': lows}
-
-    if len(highs) + len(lows) == 0:
+    
+    # Use stricter minimum gap percentage to avoid false positives
+    expected_gaps = detect_fair_value_gaps(chart_data, gap_type, min_gap_percent=0.005)
+    
+    if not expected_gaps:
+        # Check if "No FVGs Found" was correctly identified
+        if drawings and drawings[0].get('no_fvgs_found', False):
+            return {
+                'success': True,
+                'message': f'Correct! No significant {gap_type} fair value gaps in this chart.',
+                'score': 1,
+                'feedback': {
+                    'correct': [{
+                        'type': 'no_gaps',
+                        'advice': f'You correctly identified that there are no {gap_type} fair value gaps in this chart.'
+                    }],
+                    'incorrect': []
+                },
+                'totalExpectedPoints': 1,
+                'expected': {'gaps': []}
+            }
+        
         return {
             'success': False,
-            'message': 'No significant swing points detected in this chart.',
+            'message': f'No significant {gap_type} fair value gaps detected in this chart.',
             'score': 0,
-            'feedback': {'correct': [], 'incorrect': [{'advice': 'This chart does not have any significant swing points. Try another chart.'}]},
-            'expected': expected,
-            'totalExpectedPoints': 0
+            'feedback': {
+                'correct': [],
+                'incorrect': [{
+                    'type': 'no_gaps',
+                    'advice': f'There are no significant {gap_type} fair value gaps in this chart. Use the "No FVGs Found" button when appropriate.'
+                }]
+            },
+            'totalExpectedPoints': 1,
+            'expected': {'gaps': []}
         }
-
+    
+    # If user marked "No FVGs Found" but there are gaps, that's incorrect
+    if drawings and drawings[0].get('no_fvgs_found', False):
+        return {
+            'success': False,
+            'message': f'Incorrect. {len(expected_gaps)} {gap_type} fair value gaps were present in this chart.',
+            'score': 0,
+            'feedback': {
+                'correct': [],
+                'incorrect': [{
+                    'type': 'missed_all_gaps',
+                    'advice': f'You marked "No FVGs Found" but there are {len(expected_gaps)} {gap_type} fair value gaps in this chart.'
+                }]
+            },
+            'totalExpectedPoints': len(expected_gaps),
+            'expected': {'gaps': expected_gaps}
+        }
+    
+    # Calculate tolerances based on chart range (smaller tolerance than before)
     price_range = max(c['high'] for c in chart_data) - min(c['low'] for c in chart_data) if chart_data else 1
-    tolerance_map = {'1h': 0.005, '4h': 0.015, '1d': 0.025, '1w': 0.035}
-    price_tolerance = price_range * tolerance_map.get(interval, 0.02)
+    
+    # More reasonable tolerance values
+    tolerance_map = {'1h': 0.01, '4h': 0.015, '1d': 0.02, '1w': 0.025}
+    price_tolerance = price_range * tolerance_map.get(interval, 0.015)
+    
     time_increment = {'1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800}.get(interval, 14400)
     time_tolerance = time_increment * 3
-
-    matched = 0
+    
+    matched_gaps = []
     feedback = {'correct': [], 'incorrect': []}
-    used_points = set()
-
-    for d in drawings:
-        point_matched = False
-        for i, point in enumerate(highs + lows):
-            if i in used_points:
+    used_gaps = set()
+    
+    # First, validate drawings against expected gaps
+    for drawing in drawings:
+        drawing_type = drawing.get('type', gap_type)
+        if drawing_type != gap_type:
+            feedback['incorrect'].append({
+                'type': 'incorrect_type',
+                'topPrice': drawing.get('topPrice'),
+                'bottomPrice': drawing.get('bottomPrice'),
+                'advice': f'You marked a {drawing_type} gap, but we\'re looking for {gap_type} gaps in this part.'
+            })
+            continue
+        
+        gap_matched = False
+        
+        for i, gap in enumerate(expected_gaps):
+            if i in used_gaps:
                 continue
-            if (abs(d['time'] - point['time']) < time_tolerance and
-                abs(d['price'] - point['price']) < price_tolerance):
-                matched += 1
-                point_matched = True
-                used_points.add(i)
-                point_type = 'high' if point in highs else 'low'
-                feedback['correct'].append({
-                    'type': point_type,
-                    'time': point['time'],
-                    'price': point['price'],
-                    'advice': f"Good job! You identified a significant swing {point_type} at price {point['price']:.2f}."
-                })
-                break
-        if not point_matched:
+            
+            # Check if this is a horizontal line (h-line) drawing
+            is_hline = abs(drawing.get('topPrice', 0) - drawing.get('bottomPrice', 0)) < price_tolerance / 10
+            
+            if is_hline:
+                # For h-lines, check if line is in the gap area and near the median of the gap
+                price = drawing.get('topPrice', 0)
+                gap_median = (gap['topPrice'] + gap['bottomPrice']) / 2
+                price_match = abs(price - gap_median) <= price_tolerance
+                
+                # Time should be within the FVG timeframe
+                time_match = drawing.get('startTime', 0) >= gap['startTime'] - time_tolerance and \
+                             drawing.get('startTime', 0) <= gap['endTime'] + time_tolerance
+                
+                if price_match and time_match:
+                    matched_gaps.append(gap)
+                    used_gaps.add(i)
+                    gap_matched = True
+                    feedback['correct'].append({
+                        'type': gap_type,
+                        'topPrice': gap['topPrice'],
+                        'bottomPrice': gap['bottomPrice'],
+                        'size': gap['size'],
+                        'advice': f'Good job! You correctly identified this {gap_type} fair value gap with a horizontal line.'
+                    })
+                    break
+            else:
+                # For rectangle drawings, check both price and time boundaries more strictly
+                price_match = (
+                    abs(drawing.get('topPrice', 0) - gap['topPrice']) <= price_tolerance and
+                    abs(drawing.get('bottomPrice', 0) - gap['bottomPrice']) <= price_tolerance
+                )
+                
+                # Check time match - allow some flexibility but ensure general alignment
+                time_match = (
+                    abs(drawing.get('startTime', 0) - gap['startTime']) <= time_tolerance and
+                    abs(drawing.get('endTime', 0) - gap['endTime']) <= time_tolerance
+                )
+                
+                if price_match and time_match:
+                    matched_gaps.append(gap)
+                    used_gaps.add(i)
+                    gap_matched = True
+                    feedback['correct'].append({
+                        'type': gap_type,
+                        'topPrice': gap['topPrice'],
+                        'bottomPrice': gap['bottomPrice'],
+                        'size': gap['size'],
+                        'advice': f'Excellent! You correctly identified this {gap_type} fair value gap.'
+                    })
+                    break
+                
+                # If close but not exact, check if it's at least overlapping significantly
+                top_overlap = min(drawing.get('topPrice', 0), gap['topPrice'])
+                bottom_overlap = max(drawing.get('bottomPrice', 0), gap['bottomPrice'])
+                
+                # Need sufficient overlap of the gap
+                if top_overlap > bottom_overlap and (top_overlap - bottom_overlap) >= gap['size'] * 0.5:
+                    # Time should roughly correspond to the gap period
+                    if (drawing.get('startTime', 0) <= gap['endTime'] and 
+                        drawing.get('endTime', 0) >= gap['startTime']):
+                        matched_gaps.append(gap)
+                        used_gaps.add(i)
+                        gap_matched = True
+                        feedback['correct'].append({
+                            'type': gap_type,
+                            'topPrice': gap['topPrice'],
+                            'bottomPrice': gap['bottomPrice'],
+                            'size': gap['size'],
+                            'advice': f'You identified this {gap_type} fair value gap correctly, though the boundaries could be more precise.'
+                        })
+                        break
+        
+        if not gap_matched:
+            # More detailed advice for incorrect markings
             feedback['incorrect'].append({
-                'type': d['type'],
-                'time': d['time'],
-                'price': d['price'],
-                'advice': f"This point at price {d['price']:.2f} doesn't match a significant swing point."
+                'type': 'incorrect_gap',
+                'topPrice': drawing.get('topPrice'),
+                'bottomPrice': drawing.get('bottomPrice'),
+                'advice': f'This is not a valid {gap_type} FVG. Remember: {gap_type.capitalize()} FVGs require the 1st candle to be {"bullish" if gap_type == "bearish" else "bearish"}, the 3rd candle to be {"bearish" if gap_type == "bearish" else "bullish"}, and NO OVERLAP between them.'
             })
-
-    for i, point in enumerate(highs + lows):
-        if i not in used_points:
-            point_type = 'high' if point in highs else 'low'
+    
+    # Add missed gaps to feedback with specific education about the pattern
+    for i, gap in enumerate(expected_gaps):
+        if i not in used_gaps:
+            first_candle_index = gap.get('firstCandleIndex')
+            third_candle_index = gap.get('thirdCandleIndex')
+            
+            # Get the actual candles if indices are available
+            first_candle_desc = ""
+            third_candle_desc = ""
+            
+            if first_candle_index is not None and third_candle_index is not None:
+                first_candle = chart_data[first_candle_index]
+                third_candle = chart_data[third_candle_index]
+                
+                # Format dates for readability
+                first_date = datetime.fromtimestamp(first_candle['time']).strftime('%Y-%m-%d %H:%M')
+                third_date = datetime.fromtimestamp(third_candle['time']).strftime('%Y-%m-%d %H:%M')
+                
+                first_candle_desc = f" at {first_date}"
+                third_candle_desc = f" at {third_date}"
+            
             feedback['incorrect'].append({
-                'type': 'missed_point',
-                'time': point['time'],
-                'price': point['price'],
-                'advice': f"You missed a significant swing {point_type} at price {point['price']:.2f}."
+                'type': 'missed_gap',
+                'topPrice': gap['topPrice'],
+                'bottomPrice': gap['bottomPrice'],
+                'size': gap['size'],
+                'advice': f'You missed a {gap_type} FVG from {gap["bottomPrice"]:.4f} to {gap["topPrice"]:.4f}. ' + 
+                         f'This gap forms between the {"high" if gap_type == "bullish" else "low"} of the 1st candle{first_candle_desc} and ' +
+                         f'the {"low" if gap_type == "bullish" else "high"} of the 3rd candle{third_candle_desc}.'
             })
-
-    total_expected = len(highs) + len(lows)
-    success = matched == total_expected
-    score = matched
-
+    
+    score = len(matched_gaps)
+    total_expected = len(expected_gaps)
+    success = score == total_expected and score > 0
+    
     return {
         'success': success,
-        'message': 'All significant swing points identified correctly!' if success else 'Some swing points were missed or incorrect.',
+        'message': f"{gap_type.capitalize()} Fair Value Gaps: {score}/{total_expected} correctly identified!",
         'score': score,
         'feedback': feedback,
         'totalExpectedPoints': total_expected,
-        'expected': expected
+        'expected': {'gaps': expected_gaps},
+        'next_part': 2 if part == 1 else None
     }
 
 def validate_fibonacci_retracement(drawings, chart_data, interval, part):
@@ -873,196 +797,411 @@ def validate_fibonacci_retracement(drawings, chart_data, interval, part):
         'next_part': 2 if part == 1 else None
     }
 
-def validate_fair_value_gaps(drawings, chart_data, interval, part):
-    """
-    Validate user-identified FVGs against detected FVGs using strict pattern matching.
-    
-    Args:
-        drawings: User submitted FVG drawings
-        chart_data: Chart candle data
-        interval: Timeframe interval
-        part: 1 for bullish, 2 for bearish
-        
-    Returns:
-        Validation results
-    """
-    gap_type = 'bullish' if part == 1 else 'bearish'
-    
-    # Check if user indicated "No FVGs Found"
-    no_fvgs_indicated = len(drawings) == 1 and drawings[0].get('no_fvgs_found', False)
-    
-    # Detect FVGs using strict pattern definition
-    expected_gaps = detect_fair_value_gaps(chart_data, gap_type)
-    
-    # If user indicated "No FVGs Found" and we didn't find any either, this is correct
-    if no_fvgs_indicated and not expected_gaps:
-        return {
-            'success': True,
-            'message': f'Correct! There are no {gap_type} fair value gaps in this chart.',
-            'score': 1,
-            'feedback': {
-                'correct': [{
-                    'type': 'no_gaps',
-                    'advice': 'Good job! You correctly identified that there are no fair value gaps in this chart.'
-                }],
-                'incorrect': []
-            },
-            'totalExpectedPoints': 1,
-            'expected': {'gaps': []}
-        }
-    
-    # If user indicated "No FVGs Found" but we found gaps, this is incorrect
-    if no_fvgs_indicated and expected_gaps:
+def validate_swing_points(drawings, chart_data, interval):
+    if not chart_data or len(chart_data) < 10:
         return {
             'success': False,
-            'message': f'There are actually {len(expected_gaps)} {gap_type} fair value gaps in this chart.',
+            'message': 'Insufficient chart data for validation.',
             'score': 0,
-            'feedback': {
-                'correct': [],
-                'incorrect': [{
-                    'type': 'missed_all_gaps',
-                    'advice': f'You indicated no FVGs, but there are {len(expected_gaps)} {gap_type} fair value gaps present.'
-                }]
-            },
-            'totalExpectedPoints': len(expected_gaps),
-            'expected': {'gaps': expected_gaps}
+            'feedback': {'correct': [], 'incorrect': [{'advice': 'No chart data available. Please try again with a different chart.'}]},
+            'expected': {'highs': [], 'lows': []},
+            'totalExpectedPoints': 0
         }
-    
-    # If we didn't find any gaps and user made drawings
-    if not expected_gaps and not no_fvgs_indicated:
+
+    swing_points = detect_swing_points(chart_data, timeframe=interval)
+    highs = swing_points['highs']
+    lows = swing_points['lows']
+    expected = {'highs': highs, 'lows': lows}
+
+    if len(highs) + len(lows) == 0:
         return {
             'success': False,
-            'message': f'No {gap_type} fair value gaps detected in this chart.',
+            'message': 'No significant swing points detected in this chart.',
             'score': 0,
-            'feedback': {
-                'correct': [],
-                'incorrect': [{
-                    'type': 'no_gaps',
-                    'advice': f'There are no {gap_type} fair value gaps in this chart based on the strict definition. You should have used the "No FVGs Found" button.'
-                }]
-            },
-            'totalExpectedPoints': 0,
-            'expected': {'gaps': []}
+            'feedback': {'correct': [], 'incorrect': [{'advice': 'This chart does not have any significant swing points. Try another chart.'}]},
+            'expected': expected,
+            'totalExpectedPoints': 0
         }
-    
-    # Calculate tolerances based on chart range
+
     price_range = max(c['high'] for c in chart_data) - min(c['low'] for c in chart_data) if chart_data else 1
-    
-    # More generous tolerance values to account for close user markings
-    tolerance_map = {'1h': 0.015, '4h': 0.02, '1d': 0.025, '1w': 0.03}
+    tolerance_map = {'1h': 0.005, '4h': 0.015, '1d': 0.025, '1w': 0.035}
     price_tolerance = price_range * tolerance_map.get(interval, 0.02)
-    
     time_increment = {'1h': 3600, '4h': 14400, '1d': 86400, '1w': 604800}.get(interval, 14400)
-    time_tolerance = time_increment * 5  # More generous time tolerance
-    
-    matched_gaps = []
+    time_tolerance = time_increment * 3
+
+    matched = 0
     feedback = {'correct': [], 'incorrect': []}
-    used_gaps = set()
-    
-    for drawing in drawings:
-        drawing_type = drawing.get('type', gap_type)
-        if drawing_type != gap_type:
-            feedback['incorrect'].append({
-                'type': 'incorrect_type',
-                'topPrice': drawing.get('topPrice'),
-                'bottomPrice': drawing.get('bottomPrice'),
-                'advice': f'You marked a {drawing_type} gap, but we\'re looking for {gap_type} gaps in this part.'
-            })
-            continue
-        
-        gap_matched = False
-        
-        for i, gap in enumerate(expected_gaps):
-            if i in used_gaps:
+    used_points = set()
+
+    for d in drawings:
+        point_matched = False
+        for i, point in enumerate(highs + lows):
+            if i in used_points:
                 continue
-            
-            # Check if this is a horizontal line (h-line) drawing
-            is_hline = abs(drawing.get('topPrice', 0) - drawing.get('bottomPrice', 0)) < price_tolerance / 10
-            
-            if is_hline:
-                # For h-lines, check if line is within the gap area
-                price = drawing.get('topPrice', 0)
-                price_in_gap = (
-                    price <= gap['topPrice'] + price_tolerance and 
-                    price >= gap['bottomPrice'] - price_tolerance
-                )
-                
-                if price_in_gap:
-                    matched_gaps.append(gap)
-                    used_gaps.add(i)
-                    gap_matched = True
-                    feedback['correct'].append({
-                        'type': gap_type,
-                        'topPrice': gap['topPrice'],
-                        'bottomPrice': gap['bottomPrice'],
-                        'size': gap['size'],
-                        'advice': f'Good job! You correctly identified a {gap_type} fair value gap.'
-                    })
-                    break
-            else:
-                # For rectangles, check both top and bottom boundaries
-                top_match = abs(drawing.get('topPrice', 0) - gap['topPrice']) < price_tolerance
-                bottom_match = abs(drawing.get('bottomPrice', 0) - gap['bottomPrice']) < price_tolerance
-                
-                # Allow some flexibility in matching
-                gap_overlap = (
-                    min(drawing.get('topPrice', 0), gap['topPrice']) >= 
-                    max(drawing.get('bottomPrice', 0), gap['bottomPrice'])
-                )
-                
-                # Check time overlap or proximity
-                time_match = (
-                    abs(drawing.get('startTime', 0) - gap['startTime']) < time_tolerance or
-                    abs(drawing.get('endTime', 0) - gap['endTime']) < time_tolerance or
-                    (drawing.get('startTime', 0) <= gap['endTime'] and 
-                     drawing.get('endTime', 0) >= gap['startTime'])
-                )
-                
-                if ((top_match or bottom_match or gap_overlap) and time_match):
-                    matched_gaps.append(gap)
-                    used_gaps.add(i)
-                    gap_matched = True
-                    feedback['correct'].append({
-                        'type': gap_type,
-                        'topPrice': gap['topPrice'],
-                        'bottomPrice': gap['bottomPrice'],
-                        'size': gap['size'],
-                        'advice': f'Good job! You correctly identified a {gap_type} fair value gap.'
-                    })
-                    break
-        
-        if not gap_matched:
+            if (abs(d['time'] - point['time']) < time_tolerance and
+                abs(d['price'] - point['price']) < price_tolerance):
+                matched += 1
+                point_matched = True
+                used_points.add(i)
+                point_type = 'high' if point in highs else 'low'
+                feedback['correct'].append({
+                    'type': point_type,
+                    'time': point['time'],
+                    'price': point['price'],
+                    'advice': f"Good job! You identified a significant swing {point_type} at price {point['price']:.2f}."
+                })
+                break
+        if not point_matched:
             feedback['incorrect'].append({
-                'type': 'incorrect_gap',
-                'topPrice': drawing.get('topPrice'),
-                'bottomPrice': drawing.get('bottomPrice'),
-                'advice': f'This does not match the strict {gap_type} FVG pattern. Remember: NO OVERLAP between 1st and 3rd candles.'
+                'type': d['type'],
+                'time': d['time'],
+                'price': d['price'],
+                'advice': f"This point at price {d['price']:.2f} doesn't match a significant swing point."
             })
-    
-    # Add missed gaps to feedback
-    for i, gap in enumerate(expected_gaps):
-        if i not in used_gaps:
+
+    for i, point in enumerate(highs + lows):
+        if i not in used_points:
+            point_type = 'high' if point in highs else 'low'
             feedback['incorrect'].append({
-                'type': 'missed_gap',
-                'topPrice': gap['topPrice'],
-                'bottomPrice': gap['bottomPrice'],
-                'size': gap['size'],
-                'advice': f'You missed a {gap_type} fair value gap from {gap["bottomPrice"]:.2f} to {gap["topPrice"]:.2f}.'
+                'type': 'missed_point',
+                'time': point['time'],
+                'price': point['price'],
+                'advice': f"You missed a significant swing {point_type} at price {point['price']:.2f}."
             })
-    
-    score = len(matched_gaps)
-    total_expected = len(expected_gaps)
-    success = score == total_expected and score > 0
-    
+
+    total_expected = len(highs) + len(lows)
+    success = matched == total_expected
+    score = matched
+
     return {
         'success': success,
-        'message': f"{gap_type.capitalize()} Fair Value Gaps: {score}/{total_expected} correctly identified!",
+        'message': 'All significant swing points identified correctly!' if success else 'Some swing points were missed or incorrect.',
         'score': score,
         'feedback': feedback,
         'totalExpectedPoints': total_expected,
-        'expected': {'gaps': expected_gaps},
-        'next_part': 2 if part == 1 else None
+        'expected': expected
     }
+    
+@app.route('/charting_exams')
+def charting_exams():
+    session.pop('exam_data', None)
+    return render_template('index.html')
+
+@app.route('/charting_exam/swing_analysis', methods=['GET'])
+def swing_analysis():
+    if 'exam_data' not in session:
+        session['exam_data'] = {
+            'chart_count': 1,
+            'scores': [],
+            'chart_data': None,
+            'coin': None,
+            'timeframe': None
+        }
+
+    exam_data = session['exam_data']
+
+    chart_data, coin, timeframe = fetch_chart_data()
+    if not chart_data:
+        return render_template(
+            'swing_analysis.html',
+            chart_data=[],
+            progress={'chart_count': exam_data['chart_count']},
+            symbol="ERROR",
+            timeframe=timeframe,
+            error="Failed to fetch chart data."
+        )
+    
+    exam_data['chart_data'] = chart_data
+    exam_data['coin'] = coin
+    exam_data['timeframe'] = timeframe
+    session['exam_data'] = exam_data
+
+    return render_template(
+        'swing_analysis.html',
+        chart_data=chart_data,
+        progress={'chart_count': exam_data['chart_count']},
+        symbol=coin.upper(),
+        timeframe=timeframe
+    )
+
+@app.route('/charting_exam/fibonacci_retracement', methods=['GET', 'POST'])
+def fibonacci_retracement():
+    if request.args.get('reset') == 'true':
+        session.pop('exam_data', None)
+
+    if 'exam_data' not in session:
+        session['exam_data'] = {
+            'chart_count': 1,
+            'fibonacci_part': 1,
+            'scores': [],
+            'chart_data': None,
+            'coin': None,
+            'timeframe': None
+        }
+
+    exam_data = session['exam_data']
+
+    if request.method == 'GET':
+        chart_data, coin, timeframe = fetch_chart_data()
+        if not chart_data:
+            return render_template(
+                'fibonacci_retracement.html',
+                chart_data=[],
+                progress={'chart_count': exam_data['chart_count'], 'fibonacci_part': exam_data['fibonacci_part']},
+                symbol="ERROR",
+                timeframe=timeframe,
+                error="Failed to fetch chart data."
+            )
+        
+        exam_data['chart_data'] = chart_data
+        exam_data['coin'] = coin
+        exam_data['timeframe'] = timeframe
+        exam_data['fibonacci_part'] = 1
+        session['exam_data'] = exam_data
+
+        logging.debug(f"Fibonacci Retracement - Stored Chart Data Length: {len(chart_data)}")
+        logging.debug(f"Fibonacci Retracement - Stored Chart Data Sample: {chart_data[:5]}")
+
+        return render_template(
+            'fibonacci_retracement.html',
+            chart_data=chart_data,
+            progress={'chart_count': exam_data['chart_count'], 'fibonacci_part': exam_data['fibonacci_part']},
+            symbol=coin.upper(),
+            timeframe=timeframe
+        )
+    return jsonify({'message': 'Fibonacci Retracement POST received'})
+
+@app.route('/charting_exam/fair_value_gaps', methods=['GET', 'POST'])
+def fair_value_gaps():
+    if 'exam_data' not in session:
+        session['exam_data'] = {
+            'chart_count': 1,
+            'fvg_part': 1,
+            'scores': [],
+            'chart_data': None,
+            'coin': None,
+            'timeframe': None
+        }
+
+    exam_data = session['exam_data']
+
+    if request.method == 'GET':
+        chart_data, coin, timeframe = fetch_chart_data()
+        
+        # Validate the chart data
+        is_valid, message = validate_chart_data(chart_data, coin, timeframe)
+        
+        # If data is invalid, try to get a different chart
+        if not is_valid:
+            logging.warning(f"Invalid chart data: {message}")
+            chart_data, coin, timeframe = refresh_problem_chart()
+        
+        if not chart_data:
+            return render_template(
+                'fair_value_gaps.html',
+                chart_data=[],
+                progress={'chart_count': exam_data['chart_count'], 'fvg_part': exam_data['fvg_part']},
+                symbol="ERROR",
+                timeframe=timeframe,
+                error="Failed to fetch chart data."
+            )
+        
+        exam_data['chart_data'] = chart_data
+        exam_data['coin'] = coin
+        exam_data['timeframe'] = timeframe
+        exam_data['fvg_part'] = 1
+        session['exam_data'] = exam_data
+
+        logging.debug(f"Fair Value Gaps - Stored Chart Data Length: {len(chart_data)}")
+        logging.debug(f"Fair Value Gaps - Stored Chart Data Sample (last 5): {chart_data[-5:]}")
+        logging.debug(f"Fair Value Gaps - Coin: {coin}, Timeframe: {timeframe}")
+
+        return render_template(
+            'fair_value_gaps.html',
+            chart_data=chart_data,
+            progress={'chart_count': exam_data['chart_count'], 'fvg_part': exam_data['fvg_part']},
+            symbol=coin.upper(),
+            timeframe=timeframe
+        )
+    return jsonify({'message': 'Fair Value Gaps POST received'})
+
+@app.route('/charting_exam/orderblocks', methods=['GET', 'POST'])
+def orderblocks():
+    if 'exam_data' not in session:
+        session['exam_data'] = {
+            'chart_count': 1,
+            'scores': [],
+            'chart_data': None,
+            'coin': None,
+            'timeframe': None
+        }
+
+    exam_data = session['exam_data']
+
+    if request.method == 'GET':
+        chart_data, coin, timeframe = fetch_chart_data()
+        if not chart_data:
+            return render_template(
+                'orderblocks.html',
+                chart_data=[],
+                progress={'chart_count': exam_data['chart_count']},
+                symbol="ERROR",
+                timeframe=timeframe,
+                error="Failed to fetch chart data."
+            )
+        
+        exam_data['chart_data'] = chart_data
+        exam_data['coin'] = coin
+        exam_data['timeframe'] = timeframe
+        session['exam_data'] = exam_data
+
+        return render_template(
+            'orderblocks.html',
+            chart_data=chart_data,
+            progress={'chart_count': exam_data['chart_count']},
+            symbol=coin.upper(),
+            timeframe=timeframe
+        )
+    return jsonify({'message': 'Orderblocks POST received'})
+
+@app.route('/fetch_new_chart', methods=['GET'])
+def fetch_new_chart():
+    exam_data = session.get('exam_data', {'chart_count': 1, 'fibonacci_part': 1, 'fvg_part': 1})
+    
+    current_chart_count = exam_data.get('chart_count', 1)
+    
+    chart_data, coin, timeframe = fetch_chart_data()
+    
+    # Validate the chart data
+    is_valid, message = validate_chart_data(chart_data, coin, timeframe)
+    
+    # If data is invalid, try to get a different chart
+    if not is_valid:
+        logging.warning(f"Invalid chart data in fetch_new_chart: {message}")
+        chart_data, coin, timeframe = refresh_problem_chart()
+    
+    if not chart_data:
+        return jsonify({
+            'chart_data': [],
+            'chart_count': current_chart_count,
+            'fibonacci_part': exam_data.get('fibonacci_part', 1),
+            'fvg_part': exam_data.get('fvg_part', 1),
+            'symbol': "ERROR",
+            'timeframe': timeframe,
+            'error': "Failed to fetch chart data."
+        })
+
+    if 'fibonacci_part' in exam_data:
+        exam_data['fibonacci_part'] = 1
+    if 'fvg_part' in exam_data:
+        exam_data['fvg_part'] = 1
+        
+    exam_data['chart_data'] = chart_data
+    exam_data['coin'] = coin
+    exam_data['timeframe'] = timeframe
+    session['exam_data'] = exam_data
+
+    logging.debug(f"Fetch New Chart - Stored Chart Data Length: {len(chart_data)}")
+    logging.debug(f"Fetch New Chart - Current chart_count: {exam_data['chart_count']}")
+
+    return jsonify({
+        'chart_data': chart_data,
+        'chart_count': exam_data['chart_count'],
+        'fibonacci_part': exam_data.get('fibonacci_part', 1),
+        'fvg_part': exam_data.get('fvg_part', 1),
+        'symbol': coin.upper(),
+        'timeframe': timeframe
+    })
+
+@app.route('/charting_exam/validate', methods=['POST'])
+def validate_drawing():
+    data = request.get_json()
+    exam_type = data.get('examType')
+    drawings = data.get('drawings', [])
+    chart_count = data.get('chartCount')
+
+    exam_data = session.get('exam_data', {})
+    chart_data = exam_data.get('chart_data', [])
+    interval = exam_data.get('timeframe', '4h')
+    
+    if exam_type == 'fibonacci_retracement':
+        fibonacci_part = exam_data.get('fibonacci_part', 1)
+        chart_count = exam_data.get('chart_count', 1)
+        validation_result = validate_fibonacci_retracement(drawings, chart_data, interval, fibonacci_part)
+        
+        if fibonacci_part == 1:
+            exam_data['scores'].append({'uptrend': validation_result['score']})
+            exam_data['fibonacci_part'] = 2
+            session['exam_data'] = exam_data
+            validation_result['next_part'] = 2
+        else:
+            exam_data['scores'][-1]['downtrend'] = validation_result['score']
+            avg_score = (exam_data['scores'][-1]['uptrend'] + validation_result['score']) / 2
+            exam_data['scores'][-1]['average'] = avg_score
+            
+            current_chart_count = exam_data.get('chart_count', 1)
+            if current_chart_count < 5:
+                exam_data['chart_count'] = current_chart_count + 1
+            exam_data['fibonacci_part'] = 1
+            
+            session['exam_data'] = exam_data
+            validation_result['next_part'] = None
+            chart_count = exam_data['chart_count']
+            
+    elif exam_type == 'swing_analysis':
+        validation_result = validate_swing_points(drawings, chart_data, interval)
+        chart_count = exam_data.get('chart_count', 1)
+        
+    elif exam_type == 'fair_value_gaps':
+        fvg_part = exam_data.get('fvg_part', 1)
+        chart_count = exam_data.get('chart_count', 1)
+        validation_result = validate_fair_value_gaps(drawings, chart_data, interval, fvg_part)
+        
+        if fvg_part == 1:
+            exam_data['scores'].append({'bullish': validation_result['score']})
+            exam_data['fvg_part'] = 2
+            session['exam_data'] = exam_data
+            validation_result['next_part'] = 2
+        else:
+            exam_data['scores'][-1]['bearish'] = validation_result['score']
+            avg_score = (exam_data['scores'][-1]['bullish'] + validation_result['score']) / 2
+            exam_data['scores'][-1]['average'] = avg_score
+            
+            current_chart_count = exam_data.get('chart_count', 1)
+            if current_chart_count < 5:
+                exam_data['chart_count'] = current_chart_count + 1
+            exam_data['fvg_part'] = 1
+            
+            session['exam_data'] = exam_data
+            validation_result['next_part'] = None
+            chart_count = exam_data['chart_count']
+    else:
+        return jsonify({'success': False, 'message': 'Exam type not implemented yet'})
+
+    if exam_type not in ['fibonacci_retracement', 'fair_value_gaps']:
+        exam_data['scores'].append(validation_result['score'])
+    session['exam_data'] = exam_data
+
+    response = {
+        'success': validation_result['success'],
+        'message': validation_result['message'],
+        'chart_count': chart_count,
+        'feedback': validation_result['feedback'],
+        'score': validation_result['score'],
+        'totalExpectedPoints': validation_result['totalExpectedPoints'],
+        'expected': validation_result.get('expected', {})
+    }
+    
+    if exam_type == 'fibonacci_retracement':
+        response['fibonacci_part'] = fibonacci_part
+        response['next_part'] = validation_result.get('next_part')
+    elif exam_type == 'fair_value_gaps':
+        response['fvg_part'] = fvg_part
+        response['next_part'] = validation_result.get('next_part')
+        
+    response['symbol'] = exam_data.get('coin', 'Unknown').upper()
+    
+    return jsonify(response)
 
 if __name__ == '__main__':
     app.run(debug=True)

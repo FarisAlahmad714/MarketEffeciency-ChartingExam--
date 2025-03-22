@@ -71,12 +71,97 @@
     let chartData = {{ chart_data|tojson|safe }};
     let resultsData = null; // Store response data for reference
     
+    // Function to check if chart data is valid
+    function validateChartData(chartData) {
+        if (!Array.isArray(chartData) || chartData.length < 20) {
+            console.error(`Chart data invalid: ${chartData ? chartData.length : 0} candles`);
+            return false;
+        }
+        
+        // Check for too many identical candles (corrupted data)
+        let identicalCandles = 0;
+        let maxIdentical = 0;
+        
+        for (let i = 1; i < chartData.length; i++) {
+            if (chartData[i].open === chartData[i-1].open && 
+                chartData[i].high === chartData[i-1].high && 
+                chartData[i].low === chartData[i-1].low && 
+                chartData[i].close === chartData[i-1].close) {
+                identicalCandles++;
+            } else {
+                identicalCandles = 0;
+            }
+            
+            maxIdentical = Math.max(maxIdentical, identicalCandles);
+        }
+        
+        if (maxIdentical > 5) {
+            console.error(`Corrupted chart data: ${maxIdentical+1} identical candles in a row`);
+            return false;
+        }
+        
+        return true;
+    }
+
+    // Function to handle chart loading errors
+    function handleChartError() {
+        const loadingOverlay = document.getElementById('loading-overlay');
+        loadingOverlay.classList.add('active');
+        
+        const loadingText = document.querySelector('.loading-text');
+        loadingText.textContent = "Chart data issue detected. Fetching new chart...";
+        
+        // Try to get a new chart
+        fetch('/fetch_new_chart')
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                if (validateChartData(data.chart_data)) {
+                    chartData = data.chart_data;
+                    
+                    // Reset the chart
+                    candleSeries.setData([]);
+                    
+                    // Wait a short time before setting new data
+                    setTimeout(() => {
+                        candleSeries.setData(chartData);
+                        document.getElementById('chart-symbol').textContent = 
+                            `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
+                            
+                        // Update FVG panel
+                        clearAllDrawings();
+                        updateFVGPanel();
+                        
+                        // Reset the zoom
+                        chart.timeScale().resetTimeScale();
+                        chart.timeScale().fitContent();
+                        
+                        loadingOverlay.classList.remove('active');
+                    }, 500);
+                } else {
+                    // If the new data is also bad, show error message
+                    alert("Unable to load valid chart data. Please refresh the page.");
+                    loadingOverlay.classList.remove('active');
+                }
+            })
+            .catch(error => {
+                console.error('Error fetching new chart:', error);
+                alert('Failed to load new chart. Please refresh the page.');
+                loadingOverlay.classList.remove('active');
+            });
+    }
+    
     if (!Array.isArray(chartData) || chartData.length === 0) {
         console.error("Invalid chart data, using fallback");
         chartData = [
             { time: 1710960000, open: 0.5, high: 0.51, low: 0.49, close: 0.505 },
             { time: 1710963600, open: 0.505, high: 0.515, low: 0.5, close: 0.51 }
         ];
+        handleChartError(); // Try to get valid data immediately
     }
 
     const chart = LightweightCharts.createChart(document.getElementById('chart'), {
@@ -558,6 +643,156 @@
         }
     });
 
+    // Function to draw fixed FVG lines
+    // Function to draw fixed FVG lines that stay attached to candlesticks
+// Function to draw correct FVG lines that only extend to the right
+// This is the function name you already have in your code
+//working
+function drawFixedFVGLines() {
+    // First clear any existing price lines
+    markers.forEach(line => {
+        if (typeof line.remove === 'function') {
+            line.remove();
+        }
+    });
+    markers = [];
+    
+    // Remove any existing FVG labels
+    document.querySelectorAll('.fvg-label').forEach(label => label.remove());
+    
+    // Skip if no results available
+    if (!resultsData || !resultsData.expected || !resultsData.expected.gaps) return;
+    
+    // Sort gaps by top price (highest first) for numbering from top to bottom
+    const sortedGaps = [...resultsData.expected.gaps].sort((a, b) => b.topPrice - a.topPrice);
+    
+    // Draw each FVG using the proper API settings
+    sortedGaps.forEach((gap, index) => {
+        const color = gap.type === 'bullish' ? '#FF9800' : '#F44336';
+        const fvgNumber = index + 1; // Start numbering from 1
+        
+        // Create a NEW series for the lines
+        const topSeries = chart.addLineSeries({
+            color: color,
+            lineWidth: 2,
+            lineStyle: 2,
+            lastValueVisible: false,
+            priceLineVisible: false
+        });
+        
+        const bottomSeries = chart.addLineSeries({
+            color: color,
+            lineWidth: 2,
+            lineStyle: 2,
+            lastValueVisible: false,
+            priceLineVisible: false
+        });
+        
+        // Draw from the FVG end time to the right edge of the chart
+        const rightEdge = Math.max(...chartData.map(d => d.time));
+        
+        // Set exactly two points to create a line
+        topSeries.setData([
+            { time: gap.endTime, value: gap.topPrice },
+            { time: rightEdge, value: gap.topPrice }
+        ]);
+        
+        bottomSeries.setData([
+            { time: gap.endTime, value: gap.bottomPrice },
+            { time: rightEdge, value: gap.bottomPrice }
+        ]);
+        
+        // Store references to remove later
+        markers.push(topSeries, bottomSeries);
+        
+        // Add a visible label at the start of the gap
+        const chartContainer = document.getElementById('chart-container');
+        const candleX = chart.timeScale().timeToCoordinate(gap.endTime);
+        const middleY = candleSeries.priceToCoordinate((gap.topPrice + gap.bottomPrice) / 2);
+        
+        if (candleX && middleY) {
+            // Create a label for this FVG
+            const label = document.createElement('div');
+            label.className = 'fvg-label';
+            label.style.position = 'absolute';
+            label.style.left = (candleX + 5) + 'px';
+            label.style.top = middleY + 'px';
+            label.style.backgroundColor = color;
+            label.style.color = 'white';
+            label.style.padding = '2px 6px';
+            label.style.borderRadius = '4px';
+            label.style.fontWeight = 'bold';
+            label.style.fontSize = '12px';
+            label.style.zIndex = '1000';
+            label.style.transform = 'translateY(-50%)';
+            label.style.whiteSpace = 'nowrap';
+            label.textContent = `Correct FVG ${fvgNumber}`;
+            
+            chartContainer.appendChild(label);
+            
+            // Store a reference to the label element
+            markers.push({
+                remove: () => {
+                    if (label.parentNode) {
+                        label.parentNode.removeChild(label);
+                    }
+                }
+            });
+        }
+    });
+    
+    // Update label positions when chart changes
+    const updateLabelPositions = () => {
+        document.querySelectorAll('.fvg-label').forEach((label, i) => {
+            if (i < sortedGaps.length) {
+                const gap = sortedGaps[i];
+                const candleX = chart.timeScale().timeToCoordinate(gap.endTime);
+                const middleY = candleSeries.priceToCoordinate((gap.topPrice + gap.bottomPrice) / 2);
+                
+                if (candleX && middleY) {
+                    label.style.left = (candleX + 5) + 'px';
+                    label.style.top = middleY + 'px';
+                    label.style.display = '';
+                } else {
+                    label.style.display = 'none';
+                }
+            }
+        });
+    };
+    
+    // Add listeners to update labels on chart changes
+    chart.timeScale().subscribeVisibleTimeRangeChange(updateLabelPositions);
+    chart.priceScale('right').subscribeVisiblePriceRangeChange(updateLabelPositions);
+    chart.subscribeCrosshairMove(updateLabelPositions);
+}
+// Function to update FVG line positions when chart view changes
+function updateFVGLinePositions() {
+    if (!resultsData) return; // Skip if no results available
+    
+    const chartContainer = document.getElementById('chart-container');
+    if (!chartContainer) return;
+    
+    // Update each custom line
+    document.querySelectorAll('.custom-fvg-line').forEach(line => {
+        const time = parseInt(line.dataset.time);
+        const price = parseFloat(line.dataset.price);
+        if (isNaN(time) || isNaN(price)) return; // Skip if invalid data
+        
+        const candleX = chart.timeScale().timeToCoordinate(time);
+        const priceY = candleSeries.priceToCoordinate(price);
+        
+        if (candleX && priceY) {
+            // Update line position
+            line.style.left = candleX + 'px';
+            line.style.top = priceY + 'px';
+            line.style.width = (chartContainer.clientWidth - candleX) + 'px';
+            line.style.display = ''; // Make sure it's visible
+        } else {
+            // If candle is not visible, hide the line
+            line.style.display = 'none';
+        }
+    });
+}
     document.getElementById('submit-btn').addEventListener('click', () => {
         if (userFVGs.length === 0) {
             alert("Please mark at least one Fair Value Gap or use the 'No FVGs Found' button before submitting.");
@@ -589,35 +824,11 @@
             console.log('Server response:', data);
             resultsData = data;  // Store response data for reference
             
-            // Show correct FVGs on chart - changed to use orange for bullish FVGs
-            if (data.expected && Array.isArray(data.expected.gaps)) {
-                data.expected.gaps.forEach(gap => {
-                    // Use orange for bullish FVGs
-                    const color = gap.type === 'bullish' ? '#FF9800' : '#F44336';
-                    
-                    // Draw correct FVG as a pair of dashed lines
-                    const topLine = candleSeries.createPriceLine({
-                        price: gap.topPrice,
-                        color: color,
-                        lineWidth: 2,
-                        lineStyle: LightweightCharts.LineStyle.Dashed,
-                        axisLabelVisible: true,
-                        title: `Correct ${gap.type} FVG Top`
-                    });
-                    
-                    const bottomLine = candleSeries.createPriceLine({
-                        price: gap.bottomPrice,
-                        color: color,
-                        lineWidth: 2,
-                        lineStyle: LightweightCharts.LineStyle.Dashed,
-                        axisLabelVisible: true,
-                        title: `Correct ${gap.type} FVG Bottom`
-                    });
-                    
-                    // Add to markers list for later cleanup
-                    markers.push(topLine, bottomLine);
-                });
-            }
+            // Clear any existing custom FVG lines
+            document.querySelectorAll('.custom-fvg-line').forEach(line => line.remove());
+            
+            // Draw correct FVGs with custom lines that only extend right
+            setTimeout(drawFixedFVGLines, 100);
 
             // Store the current chartCount at the time of submission
             const currentChart = chartCount;
@@ -679,7 +890,7 @@
                             ${incorrectGaps.map(gap => `
                                 <div class="feedback-card">
                                     <span class="feedback-type incorrect">INCORRECT</span>
-                                    <span class="feedback-price">${gap.type === 'no_gaps' || gap.type === 'missed_all_gaps' ? '' : `Range: ${gap.topPrice ? gap.topPrice.toFixed(4) : 'N/A'} - ${gap.bottomPrice ? gap.bottomPrice.toFixed(4) : 'N/A'}`}</span>
+                                    <span class="feedback-price">${gap.type === 'no_gaps' || gap.type === 'missed_all_gaps' || gap.type === 'error' ? '' : `Range: ${gap.topPrice ? gap.topPrice.toFixed(4) : 'N/A'} - ${gap.bottomPrice ? gap.bottomPrice.toFixed(4) : 'N/A'}`}</span>
                                     <p class="feedback-advice">${gap.advice || 'This is not a fair value gap based on the three-candle pattern definition.'}</p>
                                 </div>
                             `).join('')}
@@ -732,90 +943,55 @@
         });
     });
 
-    document.getElementById('continue-btn').addEventListener('click', function() {
-        // Clear markers showing correct FVGs
-        markers.forEach(line => {
-            candleSeries.removePriceLine(line);
-        });
-        markers = [];
-        
-        if (resultsData && resultsData.next_part === 2) {
-            console.log(`Moving to Part 2, chartCount: ${chartCount}`);
-            fvgPart = 2;
-            updateInstructions();
-            clearAllDrawings();
-            
-            // Force chart refresh
-            refreshChart();
-        } else {
-            console.log(`Part 2 complete, incrementing chartCount from ${chartCount}`);
-            chartCount = resultsData ? resultsData.chart_count : chartCount + 1;
-            console.log(`New chartCount: ${chartCount}`);
-            
-            if (chartCount > maxCharts) {
-                console.log("Exam finished, showing final results");
-                showFinalResults();
-                return;
-            }
-            
-            // Show loading indicator
-            document.getElementById('loading-overlay').classList.add('active');
-            
-            console.log(`Fetching new chart, chartCount: ${chartCount}`);
-            fetch('/fetch_new_chart')
-                .then(response => {
-                    if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                    return response.json();
-                })
-                .then(data => {
-                    chartData = data.chart_data;
-                    
-                    // First clear the chart completely
-                    candleSeries.setData([]);
-                    
-                    // Wait a short time before setting new data for a visual refresh
-                    setTimeout(() => {
-                        if (Array.isArray(chartData) && chartData.length > 0) {
-                            candleSeries.setData(chartData);
-                            chartCount = data.chart_count; // Sync with server
-                            console.log(`Fetched new chart, updated chartCount: ${chartCount}`);
-                            document.getElementById('current-chart').textContent = chartCount;
-                            document.querySelector('.chart-progress').style.width = `${(chartCount / maxCharts) * 100}%`;
-                            document.getElementById('chart-symbol').textContent = `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
-                            fvgPart = 1; // Reset to bullish for new chart
-                            updateInstructions();
-                            clearAllDrawings();
-                            chart.timeScale().resetTimeScale();
-                            chart.timeScale().fitContent();
-                            
-                            if (chartCount === maxCharts) {
-                                document.getElementById('continue-btn').textContent = "Finish Exam";
-                            }
-                        } else {
-                            console.error("Invalid chart data received:", chartData);
-                            alert("Error: Received invalid chart data. Please refresh the page.");
-                        }
-                        
-                        document.getElementById('loading-overlay').classList.remove('active');
-                    }, 300);
-                })
-                .catch(error => {
-                    console.error('Error fetching new chart:', error);
-                    alert('Failed to load new chart. Please try refreshing the page.');
-                    document.getElementById('loading-overlay').classList.remove('active');
-                });
+    // Update the continue button handler to properly clear everything
+document.getElementById('continue-btn').addEventListener('click', function() {
+    // Clear any custom FVG lines and series
+    markers.forEach(marker => {
+        if (typeof marker.remove === 'function') {
+            marker.remove();
         }
-        
-        const resultsSection = document.getElementById('results-section');
-        resultsSection.classList.remove('active');
-        document.querySelector('.exam-container').classList.remove('with-results');
-        panel.style.left = '10px';
-        panel.style.top = '10px';
-        xOffset = 10;
-        yOffset = 10;
     });
+    markers = [];
+    
+    // Clear all label elements
+    document.querySelectorAll('.fvg-label').forEach(label => {
+        if (label.parentNode) {
+            label.parentNode.removeChild(label);
+        }
+    });
+    
+    // Remove any line series that might have been added
+    chart.series().forEach(series => {
+        if (series !== candleSeries) {
+            chart.removeSeries(series);
+        }
+    });
+    
+    // Reset results data to prevent redrawing
+    resultsData = null;
+    
+    // Continue with the existing code
+    if (resultsData && resultsData.next_part === 2) {
+        console.log(`Moving to Part 2, chartCount: ${chartCount}`);
+        fvgPart = 2;
+        updateInstructions();
+        clearAllDrawings();
+        
+        // Force chart refresh
+        refreshChart();
+    } else {
+        // Rest of your existing code for fetching new chart, etc.
+        // ...
+    }
+    
+    const resultsSection = document.getElementById('results-section');
+    resultsSection.classList.remove('active');
+    document.querySelector('.exam-container').classList.remove('with-results');
+    panel.style.left = '10px';
+    panel.style.top = '10px';
+    xOffset = 10;
+    yOffset = 10;
+});
 
     // Simple refresh chart function without extra validations
     function refreshChart() {
@@ -913,6 +1089,30 @@
             alert("Results download functionality would be implemented here.");
         };
     }
+
+    // Add validation on initial load
+    document.addEventListener('DOMContentLoaded', function() {
+        if (!validateChartData(chartData)) {
+            handleChartError();
+        }
+        
+        // Also add this check after the chart is rendered
+        setTimeout(() => {
+            const chartContainer = document.getElementById('chart');
+            if (chartContainer.clientHeight < 100 || !candleSeries.data() || candleSeries.data().length < 20) {
+                console.error("Chart didn't render properly");
+                handleChartError();
+            }
+        }, 1000);
+    });
+
+    // Handle resize to update custom FVG lines
+    window.addEventListener('resize', function() {
+        // Redraw custom FVG lines if results are available
+        if (resultsData) {
+            setTimeout(drawFixedFVGLines, 100);
+        }
+    });
 
     // Force a refresh after a short delay
     setTimeout(refreshChart, 500);
@@ -1248,6 +1448,10 @@
         color: #d32f2f;
         margin-top: 0;
         margin-bottom: 10px;
+    }
+    .custom-fvg-line {
+        pointer-events: none;
+        z-index: 1000;
     }
 </style>
 {% endblock %}
