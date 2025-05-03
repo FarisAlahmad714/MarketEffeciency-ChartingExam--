@@ -33,7 +33,6 @@
                 <button id="no-fvgs-button" class="btn btn-warning">No FVGs Found</button>
                 <button id="toggle-theme" class="btn btn-dark">Toggle Light Mode</button>
                 <button id="submit-btn" class="btn btn-success">Submit Answer</button>
-                <button id="reset-exam" class="btn btn-danger">Reset Exam</button>
             </div>
         </div>
         
@@ -578,22 +577,6 @@
 
     // Add event listener for the "No FVGs Found" button
     document.getElementById('no-fvgs-button').addEventListener('click', markNoFvgsFound);
-    
-    document.getElementById('reset-exam').addEventListener('click', () => {
-        if (confirm('Are you sure you want to reset the exam? This will clear all your progress.')) {
-            // Force reset by clearing local data and redirecting through the exams page
-            chartCount = 1;
-            fvgPart = 1;
-            chartScores = [];
-            clearAllDrawings();
-            document.getElementById('current-chart').textContent = "1";
-            document.querySelector('.chart-progress').style.width = "20%";
-            
-            // Redirect through charting_exams to reset session
-            fetch('/charting_exams')
-                .then(() => window.location.href = '/charting_exam/fair_value_gaps');
-        }
-    });
 
     chart.subscribeClick((param) => {
         if (!drawingMode || !param.point) return;
@@ -649,7 +632,6 @@
     });
 
     // Function to create hover areas for FVG visualization
-    // This approach uses div elements for more stable positioning
     function createFVGHoverAreas() {
         // Clear any existing hover areas and labels
         clearFVGVisualElements();
@@ -927,32 +909,31 @@
         }
     }
 
-    // Set up all needed chart event listeners
     // Set up all needed chart event listeners - MINIMAL FIX VERSION
-function setupChartEventListeners() {
-    try {
-        // Don't try to unsubscribe - this API doesn't support it
-        // Just add new listeners which will override any existing ones
-        
-        // Subscribe to chart movements
-        chart.timeScale().subscribeVisibleTimeRangeChange(updateFVGPositions);
-        
-        // Use try/catch for each subscription in case method doesn't exist
+    function setupChartEventListeners() {
         try {
-            chart.priceScale('right').subscribeVisiblePriceRangeChange(updateFVGPositions);
-        } catch (e) {
-            console.log('Price scale events not supported in this version');
+            // Don't try to unsubscribe - this API doesn't support it
+            // Just add new listeners which will override any existing ones
+            
+            // Subscribe to chart movements
+            chart.timeScale().subscribeVisibleTimeRangeChange(updateFVGPositions);
+            
+            // Use try/catch for each subscription in case method doesn't exist
+            try {
+                chart.priceScale('right').subscribeVisiblePriceRangeChange(updateFVGPositions);
+            } catch (e) {
+                console.log('Price scale events not supported in this version');
+            }
+            
+            chart.subscribeCrosshairMove(updateFVGPositions);
+            
+            // Also update on window resize
+            window.removeEventListener('resize', updateFVGPositions);
+            window.addEventListener('resize', updateFVGPositions);
+        } catch (error) {
+            console.error('Error in setupChartEventListeners:', error);
         }
-        
-        chart.subscribeCrosshairMove(updateFVGPositions);
-        
-        // Also update on window resize
-        window.removeEventListener('resize', updateFVGPositions);
-        window.addEventListener('resize', updateFVGPositions);
-    } catch (error) {
-        console.error('Error in setupChartEventListeners:', error);
     }
-}
 
     document.getElementById('submit-btn').addEventListener('click', () => {
         if (userFVGs.length === 0) {
@@ -1084,6 +1065,136 @@ function setupChartEventListeners() {
             resultsSection.classList.add('active');
             document.querySelector('.exam-container').classList.add('with-results');
 
+            document.getElementById('continue-btn').onclick = function() {
+                // Store the next_part value before clearing resultsData
+                const hasNextPart = resultsData && resultsData.next_part === 2;
+                
+                // Clear any custom FVG lines and series
+                markers.forEach(marker => {
+                    if (typeof marker.remove === 'function') {
+                        marker.remove();
+                    }
+                });
+                markers = [];
+                
+                // Clear all label elements
+                document.querySelectorAll('.fvg-label').forEach(label => {
+                    if (label.parentNode) {
+                        label.parentNode.removeChild(label);
+                    }
+                });
+                
+                // Remove any line series using our tracked fvgLineSeries array
+                fvgLineSeries.forEach(series => {
+                    try {
+                        if (series && chart && typeof chart.removeSeries === 'function') {
+                            chart.removeSeries(series);
+                        }
+                    } catch (error) {
+                        console.error('Error removing series:', error);
+                    }
+                });
+                fvgLineSeries = [];
+                
+                // Check if we're at the end of the exam (5th chart, part 2)
+                if (chartCount >= maxCharts && fvgPart === 2 && !hasNextPart) {
+                    console.log("Exam complete! This was chart 5 part 2");
+                    showFinalResults();
+                    return;
+                }
+                
+                // Continue with the proper flow using the stored value
+                if (hasNextPart) {
+                    console.log(`Moving to Part 2, chartCount: ${chartCount}`);
+                    fvgPart = 2;
+                    updateInstructions();
+                    clearAllDrawings();
+                    
+                    // Force chart refresh
+                    refreshChart();
+                } else {
+                    console.log(`Part 2 complete, moving to next chart from ${chartCount}`);
+                    // Rest of your existing code for fetching new chart
+                    const loadingOverlay = document.getElementById('loading-overlay');
+                    loadingOverlay.classList.add('active');
+                    
+                    fetch('/fetch_new_chart')
+                        .then(response => {
+                            if (!response.ok) {
+                                throw new Error(`HTTP error! status: ${response.status}`);
+                            }
+                            return response.json();
+                        })
+                        .then(data => {
+                            // Update chart count display - use server value
+                            chartCount = data.chart_count;
+                            document.getElementById('current-chart').textContent = chartCount;
+                            document.querySelector('.chart-progress').style.width = `${(chartCount / 5) * 100}%`;
+                            
+                            // Check if exam is complete 
+                            if (chartCount >= maxCharts) {
+                                console.log("Last chart reached, this is chart 5 part 1");
+                                // Don't show final results yet, need to do part 2 first
+                            }
+                            
+                            console.log(`Fetched new chart, chartCount: ${chartCount}`);
+                            
+                            // Reset FVG part and update instructions
+                            fvgPart = data.fvg_part || 1;
+                            updateInstructions();
+                            
+                            // Update chart data and symbol
+                            if (validateChartData(data.chart_data)) {
+                                chartData = data.chart_data;
+                                
+                                // Reset the chart
+                                candleSeries.setData([]);
+                                
+                                // Wait a short time before setting new data
+                                setTimeout(() => {
+                                    candleSeries.setData(chartData);
+                                    document.getElementById('chart-symbol').textContent = 
+                                        `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
+                                        
+                                    // Update FVG panel and clear drawings
+                                    clearAllDrawings();
+                                    updateFVGPanel();
+                                    
+                                    // Reset the zoom
+                                    chart.timeScale().resetTimeScale();
+                                    chart.timeScale().fitContent();
+                                    
+                                    // Update the continue button text on last chart
+                                    if (chartCount === maxCharts) {
+                                        document.getElementById('continue-btn').textContent = "Finish Exam";
+                                    }
+                                    
+                                    loadingOverlay.classList.remove('active');
+                                }, 500);
+                            } else {
+                                console.error("Invalid chart data received");
+                                handleChartError();
+                            }
+                        })
+                        .catch(error => {
+                            console.error('Error fetching new chart:', error);
+                            loadingOverlay.classList.remove('active');
+                            alert('Failed to load the next chart. Please try again.');
+                        });
+                }
+                
+                // Clear results data AFTER flow decision has been made
+                resultsData = null;
+                
+                const resultsSection = document.getElementById('results-section');
+                resultsSection.classList.remove('active');
+                document.querySelector('.exam-container').classList.remove('with-results');
+                panel.style.left = '10px';
+                panel.style.top = '10px';
+                xOffset = 10;
+                yOffset = 10;
+            };
+
             clearTimeout(loaderTimeout);
             document.getElementById('loading-overlay').classList.remove('active');
         })
@@ -1104,137 +1215,6 @@ function setupChartEventListeners() {
         });
     });
 
-    // Updated continue button handler
-    // Updated continue button handler - fixed chart.series() error
-    document.getElementById('continue-btn').addEventListener('click', function() {
-    // Store the next_part value before clearing resultsData
-    const hasNextPart = resultsData && resultsData.next_part === 2;
-    
-    // Clear any custom FVG lines and series
-    markers.forEach(marker => {
-        if (typeof marker.remove === 'function') {
-            marker.remove();
-        }
-    });
-    markers = [];
-    
-    // Clear all label elements
-    document.querySelectorAll('.fvg-label').forEach(label => {
-        if (label.parentNode) {
-            label.parentNode.removeChild(label);
-        }
-    });
-    
-    // Remove any line series using our tracked fvgLineSeries array
-    fvgLineSeries.forEach(series => {
-        try {
-            if (series && chart && typeof chart.removeSeries === 'function') {
-                chart.removeSeries(series);
-            }
-        } catch (error) {
-            console.error('Error removing series:', error);
-        }
-    });
-    fvgLineSeries = [];
-    
-    // Check if we're at the end of the exam (5th chart, part 2)
-    if (chartCount >= maxCharts && fvgPart === 2 && !hasNextPart) {
-        console.log("Exam complete! This was chart 5 part 2");
-        showFinalResults();
-        return;
-    }
-    
-    // Continue with the proper flow using the stored value
-    if (hasNextPart) {
-        console.log(`Moving to Part 2, chartCount: ${chartCount}`);
-        fvgPart = 2;
-        updateInstructions();
-        clearAllDrawings();
-        
-        // Force chart refresh
-        refreshChart();
-    } else {
-        console.log(`Part 2 complete, moving to next chart from ${chartCount}`);
-        // Rest of your existing code for fetching new chart
-        const loadingOverlay = document.getElementById('loading-overlay');
-        loadingOverlay.classList.add('active');
-        
-        fetch('/fetch_new_chart')
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                // Update chart count display - use server value
-                chartCount = data.chart_count;
-                document.getElementById('current-chart').textContent = chartCount;
-                document.querySelector('.chart-progress').style.width = `${(chartCount / 5) * 100}%`;
-                
-                // Check if exam is complete 
-                if (chartCount >= maxCharts) {
-                    console.log("Last chart reached, this is chart 5 part 1");
-                    // Don't show final results yet, need to do part 2 first
-                }
-                
-                console.log(`Fetched new chart, chartCount: ${chartCount}`);
-                
-                // Reset FVG part and update instructions
-                fvgPart = data.fvg_part || 1;
-                updateInstructions();
-                
-                // Update chart data and symbol
-                if (validateChartData(data.chart_data)) {
-                    chartData = data.chart_data;
-                    
-                    // Reset the chart
-                    candleSeries.setData([]);
-                    
-                    // Wait a short time before setting new data
-                    setTimeout(() => {
-                        candleSeries.setData(chartData);
-                        document.getElementById('chart-symbol').textContent = 
-                            `Symbol: ${data.symbol || 'Unknown'} (${data.timeframe || 'Unknown'})`;
-                            
-                        // Update FVG panel and clear drawings
-                        clearAllDrawings();
-                        updateFVGPanel();
-                        
-                        // Reset the zoom
-                        chart.timeScale().resetTimeScale();
-                        chart.timeScale().fitContent();
-                        
-                        // Update the continue button text on last chart
-                        if (chartCount === maxCharts) {
-                            document.getElementById('continue-btn').textContent = "Finish Exam";
-                        }
-                        
-                        loadingOverlay.classList.remove('active');
-                    }, 500);
-                } else {
-                    console.error("Invalid chart data received");
-                    handleChartError();
-                }
-            })
-            .catch(error => {
-                console.error('Error fetching new chart:', error);
-                loadingOverlay.classList.remove('active');
-                alert('Failed to load the next chart. Please try again.');
-            });
-    }
-    
-    // Clear results data AFTER flow decision has been made
-    resultsData = null;
-    
-    const resultsSection = document.getElementById('results-section');
-    resultsSection.classList.remove('active');
-    document.querySelector('.exam-container').classList.remove('with-results');
-    panel.style.left = '10px';
-    panel.style.top = '10px';
-    xOffset = 10;
-    yOffset = 10;
-});
     // Simple refresh chart function without extra validations
     function refreshChart() {
         const currentData = candleSeries.data();

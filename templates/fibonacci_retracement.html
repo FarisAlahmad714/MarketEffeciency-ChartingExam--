@@ -594,6 +594,93 @@
         continueBtn.onclick = function() {
             alert("Results download functionality would be implemented here.");
         };
+        // Mobile optimization for charts
+function optimizeForMobile() {
+  const isMobile = window.innerWidth < 768;
+  const isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  
+  if (isMobile || isTouch) {
+    // Add touch device class to body
+    document.body.classList.add('touch-device');
+    
+    // Optimize chart options for mobile
+    chart.applyOptions({
+      handleScale: {
+        pinch: true,
+        mouseWheel: true,
+        axisDoubleClickReset: true
+      },
+      handleScroll: {
+        pressedMouseMove: true,
+        vertTouchDrag: true,
+        horzTouchDrag: true
+      },
+      layout: {
+        fontSize: 12
+      },
+      timeScale: {
+        fixLeftEdge: true,
+        fixRightEdge: true
+      }
+    });
+    
+    // Ensure chart fits content on mobile
+    chart.timeScale().fitContent();
+    
+    // Add container size handlers
+    function updateChartSize() {
+      const container = document.getElementById('chart-container');
+      chart.applyOptions({
+        width: container.clientWidth,
+        height: container.clientHeight
+      });
+      chart.timeScale().fitContent();
+    }
+    
+    // Handle orientation changes
+    window.addEventListener('resize', updateChartSize);
+    window.addEventListener('orientationchange', () => {
+      setTimeout(updateChartSize, 300); // Wait for browser to update
+    });
+    
+    // Run once to ensure proper sizing
+    updateChartSize();
+    
+    // Setup simple pinch-zoom and panning fallback for older devices
+    const chartElement = document.getElementById('chart');
+    
+    let lastTouchDistance = 0;
+    chartElement.addEventListener('touchstart', (e) => {
+      if (e.touches.length === 2) {
+        lastTouchDistance = Math.hypot(
+          e.touches[0].pageX - e.touches[1].pageX,
+          e.touches[0].pageY - e.touches[1].pageY
+        );
+      }
+    });
+    
+    chartElement.addEventListener('touchmove', (e) => {
+      if (e.touches.length === 2) {
+        const distance = Math.hypot(
+          e.touches[0].pageX - e.touches[1].pageX,
+          e.touches[0].pageY - e.touches[1].pageY
+        );
+        
+        const scale = distance / lastTouchDistance;
+        if (scale > 1.1 || scale < 0.9) {
+          // Pinch zoom detected
+          chart.timeScale().zoom(scale > 1 ? 1.1 : 0.9);
+          lastTouchDistance = distance;
+        }
+      }
+    });
+  }
+}
+
+// Run optimization as soon as chart is loaded
+document.addEventListener('DOMContentLoaded', optimizeForMobile);
+// Also run after a small delay to ensure everything is rendered
+setTimeout(optimizeForMobile, 500);
     }
 </script>
 
